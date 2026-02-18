@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: David Abelson, University of Cambridge, Floto Laboratory, Dept of Medicine
+    orcid: https://orcid.org/0000-0001-7183-4502
+title: Klebsiella_Mobile_Elements
+version: 0.1.0
+date-released: 2026-50-02/18/26

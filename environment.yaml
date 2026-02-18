@@ -1,0 +1,8 @@
+name: Klebsiella_Mobile_Elements 
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3
+  - snakemake
