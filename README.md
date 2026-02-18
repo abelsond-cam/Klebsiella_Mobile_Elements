@@ -57,5 +57,6 @@ Project Organization
 
 --------
 
-<p><small>Project inspired by the <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a> and
-the <a target="_blank" href="https://snakemake.readthedocs.io/en/stable/snakefiles/deployment.html">Snakemake workflow template</a>. </small></p>
+<p><small>Project inspired by the 
+  <a target="_blank" href="https://drivendata.github.io/cookiecutter-data-science/">cookiecutter data science project template</a> and the 
+  <a target="_blank" href="https://snakemake.readthedocs.io/en/stable/snakefiles/deployment.html">Snakemake workflow template</a>. </small></p>
