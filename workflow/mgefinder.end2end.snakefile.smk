@@ -7,9 +7,11 @@ conda: "dependencies.yaml"
 import os
 from os.path import basename, join
 
-WD = "" 
+WD = config.get("wd", "")
+if WD:
+    WD = os.path.abspath(WD)
 
-GENOME_DIR= join(WD, config['genome_dir'])
+GENOME_DIR = join(WD, config["genome_dir"])
 ASSEMBLY_DIR = join(WD, config['assembly_dir'])
 BAM_DIR = join(WD, config['bam_dir'])
 MUSTACHE_DIR = join(WD, config['mgefinder_dir'])
@@ -19,7 +21,7 @@ RESULTS_DIR = join(WD, config['results_dir'])
 WC_genomes = glob_wildcards(join(GENOME_DIR, '{genome}.fna'))
 WC_bam_samples = glob_wildcards(join(BAM_DIR, "{sample}.{genome}.bam"))
 
-meta = "mgefinder_dataset.txt"
+meta = join(WD, config.get("mgefinder_dataset", "mgefinder_dataset.txt"))
 
 def get_assembly_dict():
     sample2filename = {}
@@ -57,10 +59,19 @@ def get_assembly():
             sample2filename[sample_name] = contigs
     return sample2filename 
 
+def get_reference_path(wildcards):
+    """Resolve reference assembly path (supports .fna, .fa, .fna.gz, .fa.gz)."""
+    base = join(WD, config["assemblies_dir"], wildcards.genome)
+    for ext in [".fna", ".fa", ".fna.gz", ".fa.gz"]:
+        p = base + ext
+        if os.path.exists(p):
+            return p
+    return base + ".fna"
+
 assembly_dict = get_assembly_dict()
 data_dict = get_data_dict()
 sample_dict = get_sample_dict()
-    
+
 def get_samples():
     samples = [] 
     with open(meta) as f:
@@ -75,8 +86,8 @@ def get_samples():
     return samples 
 
 
-SAMPLES = get_samples() 
-GENOMES = ['PAO1']
+SAMPLES = get_samples()
+GENOMES = config.get("genomes", ["PAO1"])
 
 
 rule all:

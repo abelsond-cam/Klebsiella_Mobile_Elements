@@ -1,0 +1,79 @@
+# MGEfinder pipeline config. WD = working directory for Snakemake (dataset, 00.genome, 00.assembly, etc.).
+wd: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david
+
+# Data paths (relative to wd unless absolute)
+assemblies_dir: raw/assemblies
+fastq_dir: raw/fastq
+metadata_file: final/metadata_final_curated_slimmed.tsv
+reference_comparison_sets: processed/mgefinder/reference_comparison_sets.tsv
+n_set_to_run: 1  # 1 = first row only, -1 = all rows (one Snakemake run per row)
+
+# Dataset table produced by generate_mgefinder_dataset.py (path relative to wd)
+mgefinder_dataset: mgefinder_dataset.txt
+
+# Pipeline output dirs (created by Snakemake; relative to wd)
+genome_dir: "00.genome"
+assembly_dir: "00.assembly"
+bam_dir: "00.bam"
+mgefinder_dir: mgefinder
+database_dir: database
+results_dir: results
+
+# Injected per run by driver when using reference_comparison_sets.tsv (not set here):
+# reference_sample_name: from TSV row
+# genomes: [reference_sample_name]
+
+memory: 16000
+
+# MGEfinder parameters (from denovo.original.config.yml)
+find:
+  minlen: 8
+  mincount: 2
+  minq: 20
+  minial: 21
+  mindist: 22
+  minratio: 0.10
+  maxir: 0.03
+  lins: 30
+  mcc: 2
+  check_bwa_flag: "--check-bwa"
+
+pair:
+  maxdr: 20
+  minq: 20
+  minial: 21
+  maxjsp: 0.15
+  lins: 30
+
+inferseq_assembly:
+  minident: 0.95
+  maxclip: 0.05
+  maxsize: 200000
+  minsize: 30
+
+inferseq_reference:
+  minident: 0.95
+  maxclip: 0.05
+  maxsize: 200000
+  minsize: 30
+
+inferseq_overlap:
+  minscore: 10
+  minopi: 0.9
+  minsize: 30
+
+makedatabase:
+  minsize: 30
+  maxsize: 200000
+
+inferseq_database:
+  minident: 0.90
+  maxclip: 0.05
+  maxedgedist: 10
+
+clusterseq:
+  minsize: 70
+  maxsize: 200000
+
+genotype:
+  filter_clusters: True

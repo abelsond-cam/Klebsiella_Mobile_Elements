@@ -11,5 +11,7 @@
 eval "$(micromamba shell hook --shell bash)"
 micromamba activate fastq-dl
 
-cd /home/dca36/workspace/Bacotype
-python src/bacotype/pp/run_fastq_download.py "$@"
+# Run from Klebsiella_Mobile_Elements project root so src/run_fastq_download.py and imports resolve
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_ROOT"
+python src/run_fastq_download.py "$@"
