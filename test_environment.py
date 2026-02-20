@@ -1,3 +1,4 @@
+"""Check that the current Python is 3.x. Used by 'make requirements' / test_environment (not a config file)."""
 import sys
 
 

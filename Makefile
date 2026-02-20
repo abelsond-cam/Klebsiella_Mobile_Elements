@@ -1,4 +1,4 @@
-.PHONY: clean data data-legacy lint requirements fetch_data pipeline pipeline-verbose test-n1 dry-run test-dry test-dry-skip-dl submit-hpc recreate-symlinks test-mgefinder-env fix-mgefinder-pulp fix-mgefinder-snakemake test-mgefinder-tools upgrade-mgefinder-env test-dry-workaround fix-snakefile-conda
+.PHONY: clean data data-legacy lint requirements fetch_data pipeline pipeline-verbose test-n1 dry-run test-dry test-dry-skip-dl submit-hpc recreate-symlinks test-mgefinder-env test_environment create_environment help
 
 #################################################################################
 # GLOBALS                                                                       #
@@ -43,27 +43,23 @@ requirements: test_environment
 
 ## Make Dataset (multi-environment: snakemake for pipeline, mgefinder_env via conda)
 data:
-	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml
 
-## Test with 1 sample only (safe for login node)
+## Test with 1 sample only (safe for login node; skips FASTQ download - use if sample already present)
 test-n1:
-	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --verbose
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --verbose --skip-download
 
 ## Dry run: show what would be done (safe for login node)
 dry-run:
-	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --dry-run --verbose
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --dry-run --verbose
 
 ## Test dry run with 1 sample (safest for login node)
 test-dry:
-	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --dry-run --verbose
 
 ## Skip downloads if FASTQ already exists (useful for testing)
 test-dry-skip-dl:
-	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
-
-## Add conda environments to all MGEfinder rules in Snakefile  
-fix-snakefile-conda:
-	python3 scripts/add_conda_to_snakefile.py
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
 
 ## Submit full pipeline to HPC scheduler (adjust scripts/submit_hpc.sh first)
 submit-hpc:
@@ -81,27 +77,6 @@ recreate-symlinks:
 test-mgefinder-env:
 	@echo ">>> Testing if mgefinder_env can run snakemake..."
 	$(call activate-mge) && snakemake --version
-
-## Try to fix mgefinder environment pulp issue
-fix-mgefinder-pulp:
-	@echo ">>> Attempting to fix pulp in mgefinder_env..."
-	$(call activate-mge) && pip install --upgrade pulp
-
-## Fix Snakemake compatibility in mgefinder_env
-fix-mgefinder-snakemake:
-	bash scripts/fix_mgefinder_snakemake.sh
-
-## Test if MGEfinder tools work individually (backup plan)
-test-mgefinder-tools:
-	$(call activate-mge) && python3 scripts/test_mgefinder_without_snakemake.py
-
-## Upgrade mgefinder_env to include all pipeline dependencies
-upgrade-mgefinder-env:
-	bash scripts/upgrade_mgefinder_env.sh
-
-## WORKAROUND: Run pipeline using only working environments
-test-dry-workaround:
-	python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
 
 ## Make Dataset (legacy bash version)
 data-legacy:

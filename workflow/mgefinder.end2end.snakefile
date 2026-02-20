@@ -4,9 +4,8 @@
 
 # MGEfinder end-to-end: BWA, formatbam, Bowtie2 index, MGEfinder find/pair/inferseq/makedatabase/clusterseq/genotype/summarize/makefasta.
 # Entrypoint: workflow/Snakefile (includes this file). Run: snakemake -s workflow/Snakefile --configfile config/config.yaml --directory <WD> [targets]
-# Dataset TSV: data_dir, sample_id, sample_name, gff, contigs. SEGMENT comments mark parts for isolated testing.
-
-conda: "../envs/mgefinder.yaml"
+# Dataset TSV: data_dir, sample_id, sample_name, gff, contigs [, fastq1, fastq2 ]. If fastq1/fastq2 columns present, bwa uses them; else assumes data_dir/sample_id_1.fastq.gz. SEGMENT comments mark parts for isolated testing.
+# No conda: directive; run Snakemake with your env activated (e.g. micromamba activate mgefinder_env).
 
 import os
 from os.path import basename, join
@@ -18,24 +17,33 @@ DATA_DIR = config.get("data_dir", WD)
 if DATA_DIR:
     DATA_DIR = os.path.abspath(DATA_DIR)
 
-GENOME_DIR = join(WD, config["genome_dir"])
-ASSEMBLY_DIR = join(WD, config['assembly_dir'])
-BAM_DIR = join(WD, config['bam_dir'])
-MUSTACHE_DIR = join(WD, config['mgefinder_dir'])
-DATABASE_DIR = join(WD, config['database_dir'])
-RESULTS_DIR = join(WD, config['results_dir'])
+GENOME_DIR = join(WD, config.get("genome_dir", "00.genome"))
+ASSEMBLY_DIR = join(WD, config.get('assembly_dir', "00.assembly"))
+BAM_DIR = join(WD, config.get('bam_dir', "00.bam"))
+BWA_DIR = join(WD, "bwa")
+MUSTACHE_DIR = join(WD, config.get('mgefinder_dir', "mgefinder"))
+DATABASE_DIR = join(WD, config.get('database_dir', "database"))
+RESULTS_DIR = join(WD, config.get('results_dir', "results"))
+
+# Debug: print where we read (DATA_DIR) vs where we write (WD and its subdirs)
+print("MGEfinder paths: data_dir (read) =", DATA_DIR, "| wd (write) =", WD)
+print("  subdirs under wd: genome_dir =", GENOME_DIR, "| assembly_dir =", ASSEMBLY_DIR, "| bam_dir =", BAM_DIR, "| bwa_dir =", BWA_DIR)
 
 WC_genomes = glob_wildcards(join(GENOME_DIR, '{genome}.fna'))
 WC_bam_samples = glob_wildcards(join(BAM_DIR, "{sample}.{genome}.bam"))
 
 meta = join(WD, config.get("mgefinder_dataset", "mgefinder_dataset.txt"))
 
+def _parse_meta_line(l):
+    parts = l.strip().split('\t')
+    return parts[0], parts[1], parts[2], parts[3], parts[4]
+
 def get_assembly_dict():
     sample2filename = {}
     with open(meta) as f:
         f.readline() 
         for l in f:
-            data_dir, sample_id, sample_name, gff, contigs = l.strip().split('\t') 
+            data_dir, sample_id, sample_name, gff, contigs = _parse_meta_line(l)
             sample2filename[sample_name] = contigs
     return sample2filename 
 
@@ -44,7 +52,7 @@ def get_data_dict():
     with open(meta) as f:
         f.readline() 
         for l in f:
-            data_dir, sample_id, sample_name, gff, contigs = l.strip().split('\t') 
+            data_dir, sample_id, sample_name, gff, contigs = _parse_meta_line(l)
             sample2filename[sample_name] = data_dir 
     return sample2filename 
 
@@ -53,16 +61,44 @@ def get_sample_dict():
     with open(meta) as f:
         f.readline() 
         for l in f:
-            data_dir, sample_id, sample_name, gff, contigs = l.strip().split('\t') 
+            data_dir, sample_id, sample_name, gff, contigs = _parse_meta_line(l)
             sample2filename[sample_name] = sample_id 
     return sample2filename 
+
+def get_fastq1_dict():
+    """sample_name -> path to first FASTQ. Uses fastq1 column if present (7-col), else data_dir/sample_id_1.fastq.gz (5-col)."""
+    out = {}
+    with open(meta) as f:
+        f.readline()
+        for l in f:
+            parts = l.strip().split('\t')
+            data_dir, sample_id, sample_name, gff, contigs = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if len(parts) >= 7:
+                out[sample_name] = parts[5]
+            else:
+                out[sample_name] = data_dir + "/" + sample_id + "_1.fastq.gz"
+    return out
+
+def get_fastq2_dict():
+    """sample_name -> path to second FASTQ. Uses fastq2 column if present (7-col), else data_dir/sample_id_2.fastq.gz (5-col)."""
+    out = {}
+    with open(meta) as f:
+        f.readline()
+        for l in f:
+            parts = l.strip().split('\t')
+            data_dir, sample_id, sample_name, gff, contigs = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if len(parts) >= 7:
+                out[sample_name] = parts[6]
+            else:
+                out[sample_name] = data_dir + "/" + sample_id + "_2.fastq.gz"
+    return out
 
 def get_assembly():
     sample2filename = {}
     with open(meta) as f:
         f.readline() 
         for l in f:
-            data_dir, sample_id, sample_name, gff, contigs = l.strip().split('\t') 
+            data_dir, sample_id, sample_name, gff, contigs = _parse_meta_line(l)
             sample2filename[sample_name] = contigs
     return sample2filename 
 
@@ -78,6 +114,8 @@ def get_reference_path(wildcards):
 assembly_dict = get_assembly_dict()
 data_dict = get_data_dict()
 sample_dict = get_sample_dict()
+fastq1_dict = get_fastq1_dict()
+fastq2_dict = get_fastq2_dict()
 
 def get_samples():
     samples = [] 
@@ -88,19 +126,19 @@ def get_samples():
             #if i == 1:
             #    break
             i+=1
-            data_dir, sample_id, sample_name, gff, contigs = l.strip().split('\t') 
+            data_dir, sample_id, sample_name, gff, contigs = _parse_meta_line(l)
             samples.append(sample_name)
     return samples 
 
 
 SAMPLES = get_samples()
-# Get genomes from config (injected via .mge_genomes.yaml) - fail fast if missing
+# Get genomes from config (set by run_pipeline.py in merged config)
 try:
     GENOMES = config["genomes"]
     if not GENOMES:
         raise KeyError("genomes list is empty")
 except KeyError:
-    raise SystemExit("ERROR: 'genomes' not found in config. Pipeline requires genomes to be set via --configfile .mge_genomes.yaml")
+    raise SystemExit("ERROR: 'genomes' not found in config. Run the pipeline via: make test-dry-skip-dl (or data/dry-run) so run_pipeline.py injects genomes.")
 
 
 rule all:
@@ -118,7 +156,7 @@ rule copy_genome:
         join(GENOME_DIR, "{genome}.fna"),
     shell:
         """
-        echo ">>> copy_genome: preparing reference {wildcards.genome} -> {output}"
+        echo ">>> copy_genome: read {input.ref} write {output}"
         if [[ "{input.ref}" == *.gz ]]; then
             gunzip -c "{input.ref}" > "{output}"
         else
@@ -133,7 +171,7 @@ rule copy_assembly:
         join(ASSEMBLY_DIR, "{sample}.fna"),
     shell:
         """
-        echo ">>> copy_assembly: preparing assembly {wildcards.sample} -> {output}"
+        echo ">>> copy_assembly: read {input.assembly} write {output}"
         if [[ "{input.assembly}" == *.gz ]]; then
             gunzip -c "{input.assembly}" > "{output}"
         else
@@ -144,44 +182,41 @@ rule copy_assembly:
 # --- SEGMENT: BWA (bwa_index, bwa, formatbam) ---
 rule formatbam:
     input:
-        "bwa/{sample}.{genome}.bwa.sam"
+        join(BWA_DIR, "{sample}.{genome}.bwa.sam")
     output:
-        temp("00.bam/{sample}.{genome}.bam")
-    conda:
-        "../envs/mgefinder.yaml"
+        temp(join(BAM_DIR, "{sample}.{genome}.bam"))
     shell:
         """
-        echo ">>> formatbam: {wildcards.sample} {wildcards.genome} -> {output}"
+        echo ">>> formatbam: read {input} write {output}"
         mgefinder formatbam  {input} {output}
         """
 
 
 rule bwa_index:
-    input: 
-        "00.genome/{genome}.fna"
+    input:
+        join(GENOME_DIR, "{genome}.fna")
     output:
-        "00.genome/{genome}.fna.amb",
+        join(GENOME_DIR, "{genome}.fna.amb"),
     shell:
         """
-        echo ">>> bwa_index: indexing reference {wildcards.genome}"
+        echo ">>> bwa_index: read {input} write {output}"
         bwa index {input} {output}
         """
 
 rule bwa:
     input:
-        index = "00.genome/{genome}.fna.amb",
-        genome = "00.genome/{genome}.fna", 
-        fastq1 = lambda wc: data_dict[wc.sample] + "/" + sample_dict[wc.sample] + "_1.fastq.gz",  
-        fastq2 = lambda wc: data_dict[wc.sample] + "/" + sample_dict[wc.sample] + "_2.fastq.gz"  
-
+        index = join(GENOME_DIR, "{genome}.fna.amb"),
+        genome = join(GENOME_DIR, "{genome}.fna"),
+        fastq1 = lambda wc: fastq1_dict[wc.sample],
+        fastq2 = lambda wc: fastq2_dict[wc.sample]
     params:
         #data_dir = lambda wc: data_dict[wc.sample],       
         #sample_id = lambda wc: sample_dict[wc.sample],
-    output: 
-        sample=temp("bwa/{sample}.{genome}.bwa.sam")
+    output:
+        sample=temp(join(BWA_DIR, "{sample}.{genome}.bwa.sam"))
     shell:
         """
-        echo ">>> bwa: aligning {wildcards.sample} -> {wildcards.genome}"
+        echo ">>> bwa: read {input.genome} {input.fastq1} {input.fastq2} write {output.sample}"
         bwa mem {input.genome} {input.fastq1} {input.fastq2}   -o  {output.sample}
         """
 
@@ -246,7 +281,7 @@ rule find:
         check_bwa=config['find']['check_bwa_flag']
     shell:
         """
-        echo ">>> find: MGEfinder find {wildcards.sample} {wildcards.genome}"
+        echo ">>> find: read {input.bam} write {output.find}"
         mgefinder find -id {params.sample} -minlen {params.minlen} -mincount {params.mincount} -minq {params.minq} \
         -minial {params.minial} -mindist {params.mindist} -minratio {params.minratio} -maxir {params.maxir} -lins \
         {params.lins} -mcc {params.mcc} {params.check_bwa} {input.bam} -o {output.find} 1> {log} 2> {log}.err || \

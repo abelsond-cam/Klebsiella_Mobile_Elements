@@ -9,12 +9,11 @@ Mobile Genetic Elements in Klebsiella, identification and isolation
 ├── LICENSE
 ├── Makefile           <- Makefile with commands like `make data` or `make train`
 ├── README.md          <- The top-level README for developers using this project.
-├── config             <- Configuration options for the analysis.
-│   ├── config.yaml    <- Snakemake config file.
-│   └── samples.tsv    <- A metadata table for all the samples run in the analysis.
+├── config             <- Configuration for the pipeline.
+│   ├── config.yaml    <- Single pipeline config (paths, MGEfinder parameters). See config/README.md.
+│   └── .mge_merged_config.yaml  <- Generated at run time (gitignored).
+├── envs               <- Conda env specs for Snakemake rules (e.g. envs/mgefinder.yaml). See envs/README.md.
 ├── docs               <- A default Sphinx project; see sphinx-doc.org for details
-├── environment.yaml   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `conda env export > environment.yaml`
 ├── img                <- A place to store images associated with the project/pipeline, e.g. a
 │                         figure of the pipeline DAG.
 ├── notebooks          <- Jupyter or Rmd notebooks. Naming convention is a number (for ordering),
@@ -33,11 +32,9 @@ Mobile Genetic Elements in Klebsiella, identification and isolation
 ├── src                <- Source code for use in this project.
 │   └── __init__.py    <- Makes src a Python module
 ├── tox.ini            <- tox file with settings for running tox; see tox.readthedocs.io
-├── workflow           <- Place to store the main pipeline for rerunning all the analysis.
-│   ├── envs           <- Contains different conda environments in .yaml format for running the pipeline.
-│   ├── rules          <- Contains .smk files that are included by the main Snakefile, including common.smk for functions.
-│   ├── scripts        <- Contains different R or python scripts used by the script: directive in Snakemake.
-│   └── Snakefile      <- Contains the main entrypoint to the pipeline.
+├── workflow           <- Main pipeline (Snakefile includes mgefinder.end2end.snakefile).
+│   ├── rules          <- Optional .smk modules.
+│   └── Snakefile      <- Entrypoint that includes mgefinder.end2end.snakefile.
 └── workspace          <- Space for intermediate results in the pipeline. By default excluded from the git repository.
 ```
 

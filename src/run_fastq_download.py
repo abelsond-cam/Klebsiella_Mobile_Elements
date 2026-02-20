@@ -5,6 +5,10 @@ Accepts a list of sample_accessions via --ids-file (one per line) or --ids,
 or falls back to select_genomes(n) from reference_comparison_sets. Writes
 to fastq_dir/{sample_id}/{sample_id}_1.fastq.gz and _2.fastq.gz (fastq-dl
 typically uses the accession as prefix when downloading to that dir).
+
+TODO: Currently run in micromamba env 'fastq-dl', which may lack pyyaml. Consider
+adding pyyaml (and optionally fastq-dl) to the snakemake environment so this
+script can be run from the same env as the rest of the pipeline.
 """
 
 import argparse
@@ -100,7 +104,7 @@ def get_fastq_dir(args: argparse.Namespace) -> Path:
     
     if args.config is not None and args.config.exists():
         try:
-            import yaml
+            import yaml  # TODO: fastq-dl env may not have pyyaml; consider adding to snakemake env and running from there
             with open(args.config) as f:
                 cfg = yaml.safe_load(f)
             

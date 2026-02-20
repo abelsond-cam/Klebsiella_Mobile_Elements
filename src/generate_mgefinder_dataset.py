@@ -3,8 +3,8 @@
 
 Reads the selected row(s) from reference_comparison_sets.tsv (reference_sample_name,
 mge_comparison_set), maps sample_accession -> Sample via metadata, discovers assembly
-paths under assemblies_dir (supports .fna.gz, .fa.gz, .fna, .fa), and writes a
-5-column TSV: data_dir, sample_id, sample_name, gff, contigs.
+paths under assemblies_dir (supports .fna.gz, .fa.gz, .fna, .fa), discovers one FASTQ pair per sample dir (any *_1.*/_2.* naming), and writes a
+7-column TSV: data_dir, sample_id, sample_name, gff, contigs, fastq1, fastq2.
 
 Usage:
   For first row only (n_set_to_run=1):
@@ -31,6 +31,20 @@ def discover_assembly_path(assemblies_dir: Path, sample_name: str) -> Optional[P
         p = assemblies_dir / f"{sample_name}{ext}"
         if p.exists():
             return p
+    return None
+
+
+def discover_fastq_pair(fastq_dir: Path) -> Optional[tuple[Path, Path]]:
+    """Find a FASTQ pair in fastq_dir. Looks for *_1.fastq.gz / *_2.fastq.gz (or .fq.gz).
+    Returns (path1, path2) for the first pair found, or None if no pair found.
+    Does not assume filenames (e.g. DRR* vs SAM*)."""
+    for suffix in ("_1.fastq.gz", "_1.fq.gz"):
+        for f1 in sorted(fastq_dir.glob(f"*{suffix}")):
+            # e.g. DRR061421_1.fastq.gz -> DRR061421_2.fastq.gz
+            f2_name = f1.name.replace("_1.", "_2.", 1)
+            f2 = f1.parent / f2_name
+            if f2.exists():
+                return (f1, f2)
     return None
 
 
@@ -127,12 +141,19 @@ def main() -> None:
             continue
 
         data_dir = fastq_dir / sample_id
+        fastq_pair = discover_fastq_pair(data_dir)
+        if fastq_pair is None:
+            print(f"Warning: no FASTQ pair found in {data_dir}, skipping", file=sys.stderr)
+            continue
+        fastq1_path, fastq2_path = fastq_pair
         rows_out.append({
             "data_dir": str(data_dir),
             "sample_id": sample_id,
             "sample_name": sample_name,
             "gff": ".",
             "contigs": str(contigs_path),
+            "fastq1": str(fastq1_path),
+            "fastq2": str(fastq2_path),
         })
 
     if not rows_out:

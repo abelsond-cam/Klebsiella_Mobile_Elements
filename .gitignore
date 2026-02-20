@@ -17,5 +17,6 @@ data/
 .idea/
 .vscode/
 
-# Temp config overlay (pipeline target)
+# Generated at pipeline run (do not commit)
 .mge_genomes.yaml
+config/.mge_merged_config.yaml

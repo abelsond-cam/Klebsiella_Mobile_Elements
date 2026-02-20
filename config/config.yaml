@@ -1,6 +1,7 @@
-# MGEfinder pipeline config.
+# MGEfinder pipeline config (single source of truth for paths and MGEfinder parameters).
 # data_dir = root for raw data, metadata, reference_comparison_sets (assemblies, fastq, etc.)
 # wd = pipeline working dir; outputs (00.genome, 00.assembly, bam, mgefinder, database, results) go under wd
+# genomes = set at runtime by run_pipeline.py (from reference_comparison_sets.tsv) and merged into one config for Snakemake
 data_dir: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david
 wd: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/processed/mgefinder
 
