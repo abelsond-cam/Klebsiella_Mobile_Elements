@@ -1,4 +1,4 @@
-.PHONY: clean data lint requirements fetch_data pipeline
+.PHONY: clean data data-legacy lint requirements fetch_data pipeline pipeline-verbose test-n1 dry-run test-dry test-dry-skip-dl submit-hpc recreate-symlinks test-mgefinder-env fix-mgefinder-pulp fix-mgefinder-snakemake test-mgefinder-tools upgrade-mgefinder-env test-dry-workaround fix-snakefile-conda
 
 #################################################################################
 # GLOBALS                                                                       #
@@ -6,14 +6,24 @@
 
 PROJECT_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 PROJECT_NAME = Klebsiella_Mobile_Elements
+MGE_ENV = mgefinder_env
+SNAKE_ENV = snakemake
+FASTQ_ENV = fastq-dl
 
-ifeq (,$(shell which conda))
-HAS_CONDA=False
-else
-HAS_CONDA=True
-endif
+# Activate mgefinder_env (micromamba) - for MGEfinder pipeline only
+define activate-mge
+	eval "$$(micromamba shell hook --shell bash)" && micromamba activate $(MGE_ENV)
+endef
 
-CONDA_ACTIVATE=source $$(conda info --base)/etc/profile.d/conda.sh ; conda activate
+# Activate snakemake env (micromamba) - for data prep and validation
+define activate-snake
+	eval "$$(micromamba shell hook --shell bash)" && micromamba activate $(SNAKE_ENV)
+endef
+
+# Activate fastq-dl env (micromamba) - for FASTQ downloads
+define activate-fastq
+	eval "$$(micromamba shell hook --shell bash)" && micromamba activate $(FASTQ_ENV)
+endef
 
 # use this function to load modules on the cluster
 # usage in Makefile: $(call module-load,snakemake) && snakemake -j1 ...
@@ -31,8 +41,70 @@ requirements: test_environment
 	#python3 -m pip install -U pip setuptools wheel
 	#python3 -m pip install -r requirements.txt
 
-## Make Dataset
+## Make Dataset (multi-environment: snakemake for pipeline, mgefinder_env via conda)
 data:
+	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml
+
+## Test with 1 sample only (safe for login node)
+test-n1:
+	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --verbose
+
+## Dry run: show what would be done (safe for login node)
+dry-run:
+	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --dry-run --verbose
+
+## Test dry run with 1 sample (safest for login node)
+test-dry:
+	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose
+
+## Skip downloads if FASTQ already exists (useful for testing)
+test-dry-skip-dl:
+	$(call activate-snake) && python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
+
+## Add conda environments to all MGEfinder rules in Snakefile  
+fix-snakefile-conda:
+	python3 scripts/add_conda_to_snakefile.py
+
+## Submit full pipeline to HPC scheduler (adjust scripts/submit_hpc.sh first)
+submit-hpc:
+	sbatch scripts/submit_hpc.sh
+
+## Recreate symlinks with correct paths (removes existing ones first)
+recreate-symlinks:
+	@echo ">>> Removing existing symlinks and recreating with correct paths"
+	@ASSEMBLY_DIR=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']) + '/' + c['assemblies_dir'])") && \
+	echo "Assembly dir: $$ASSEMBLY_DIR" && \
+	cd "$$ASSEMBLY_DIR" && rm -f *.fa.gz *.fna.gz && \
+	python3 $(PROJECT_DIR)/scripts/bulk_symlink_assemblies.py
+
+## Test if mgefinder environment can run snakemake
+test-mgefinder-env:
+	@echo ">>> Testing if mgefinder_env can run snakemake..."
+	$(call activate-mge) && snakemake --version
+
+## Try to fix mgefinder environment pulp issue
+fix-mgefinder-pulp:
+	@echo ">>> Attempting to fix pulp in mgefinder_env..."
+	$(call activate-mge) && pip install --upgrade pulp
+
+## Fix Snakemake compatibility in mgefinder_env
+fix-mgefinder-snakemake:
+	bash scripts/fix_mgefinder_snakemake.sh
+
+## Test if MGEfinder tools work individually (backup plan)
+test-mgefinder-tools:
+	$(call activate-mge) && python3 scripts/test_mgefinder_without_snakemake.py
+
+## Upgrade mgefinder_env to include all pipeline dependencies
+upgrade-mgefinder-env:
+	bash scripts/upgrade_mgefinder_env.sh
+
+## WORKAROUND: Run pipeline using only working environments
+test-dry-workaround:
+	python3 src/run_pipeline_workaround.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
+
+## Make Dataset (legacy bash version)
+data-legacy:
 	fetch_data
 	pipeline
 
@@ -41,47 +113,58 @@ clean:
 	find . -type f -name "*.py[co]" -delete
 	find . -type d -name "__pycache__" -delete
 
-## Lint using flake8
+## Lint using flake8 (requires mgefinder_env)
 lint:
-	eval "$(conda shell.bash hook)"
-	conda activate $(PROJECT_NAME)
-	flake8 src
+	$(call activate-mge) && flake8 src
 
-## Fetch the raw data, either from local or remote sources. IMPLEMENT ME!
+## Fetch the raw data: from reference_comparison_sets.tsv get comparison IDs, check FASTQ, download if missing, generate mgefinder_dataset.txt
 fetch_data:
-	echo "Implement fetch of data"
-	# some suggested commands
-	# ln -s --relative /path/to/your/data data/
-	# wget https://url.com/of/your/data
+	@$(call activate-snake) && \
+	WD=$$(python3 -c "import yaml; print(yaml.safe_load(open('config/config.yaml'))['wd'])") && \
+	DATA=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']))") && \
+	echo ">>> Fetch data (wd=$$WD, data_dir=$$DATA)" && \
+	ids=$$(python3 -c "import pandas as pd; df=pd.read_csv('$$DATA/processed/mgefinder/reference_comparison_sets.tsv', sep='\t'); row=df.iloc[0]; print(','.join([x.strip() for x in str(row['mge_comparison_set']).split(',')]))" 2>/dev/null) && \
+	if [ -n "$$ids" ]; then echo "Checking FASTQ for comparison set..."; python3 src/run_fastq_download.py --config config/config.yaml --ids $$(echo "$$ids" | tr ',' ' ') 2>/dev/null || ./scripts/run_fastq_download.sh --config config/config.yaml --ids $$(echo "$$ids" | tr ',' ' '); fi && \
+	python3 src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out "$$WD/mgefinder_dataset.txt" && \
+	echo ">>> Dataset written to $$WD/mgefinder_dataset.txt"
 
-## Set up python interpreter environment
+## Set up python interpreter environment (use micromamba; extend mgefinder_env manually)
 create_environment:
-ifeq (True,$(HAS_CONDA))
-	@echo ">>> Detected conda, creating conda environment."
-	conda env create -f environment.yaml
-	@echo ">>> New conda env created. Activate with: "
-	@echo "conda activate $(PROJECT_NAME)"
-else
-	@echo "Error: conda not detected. Exiting. "
-	exit 1
-endif
+	@echo ">>> Use: micromamba create -n $(MGE_ENV) ... and extend manually as needed"
+	@echo ">>> Activate with: micromamba activate $(MGE_ENV)"
 
-## Test python environment is setup correctly
+## Test mgefinder_env (the only environment we use after upgrade)
 test_environment:
-	eval "$(conda shell.bash hook)"
-	conda activate $(PROJECT_NAME)
-	python3 test_environment.py
+	@echo ">>> Testing mgefinder_env (our single environment for everything)..."
+	$(call activate-mge) && python3 scripts/diagnose_env.py
 
 #################################################################################
 # PROJECT RULES                                                                 #
 #################################################################################
 
-## Execute the data pipeline. IMPLEMENT ME!
+## Execute the data pipeline: generate dataset for first row, then run Snakemake with config and WD as directory
 pipeline:
-	echo "Implement running of pipeline"	
-	# suggested commands as follows
-	#module load snakemake # specific to MPI-IE infrastructure
-	#snakemake -s workflow/Snakefile -j 1 --workdir workflow --profile /path/to/mpi-ie-slurm/mpi-ie-slurm all
+	@$(call activate-snake) && \
+	WD=$$(python3 -c "import yaml; print(yaml.safe_load(open('config/config.yaml'))['wd'])") && \
+	DATA=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']))") && \
+	REF=$$(python3 -c "import pandas as pd; df=pd.read_csv('$$DATA/processed/mgefinder/reference_comparison_sets.tsv', sep='\t'); print(df.iloc[0]['reference_sample_name'])") && \
+	echo ">>> Running MGEfinder pipeline (wd=$$WD, reference=$$REF)" && \
+	python3 src/validate_reference.py --config config/config.yaml --row 0 && \
+	python3 src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out "$$WD/mgefinder_dataset.txt" && \
+	echo "genomes: [$$REF]" > $(PROJECT_DIR)/.mge_genomes.yaml && \
+	snakemake --configfile config/config.yaml --configfile $(PROJECT_DIR)/.mge_genomes.yaml --directory "$$WD" -j 1 all
+
+## Same as pipeline but with --printshellcmds and -p so you can verify each step as it runs
+pipeline-verbose:
+	@$(call activate-snake) && \
+	WD=$$(python3 -c "import yaml; print(yaml.safe_load(open('config/config.yaml'))['wd'])") && \
+	DATA=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']))") && \
+	REF=$$(python3 -c "import pandas as pd; df=pd.read_csv('$$DATA/processed/mgefinder/reference_comparison_sets.tsv', sep='\t'); print(df.iloc[0]['reference_sample_name'])") && \
+	echo ">>> Running MGEfinder pipeline VERBOSE (wd=$$WD, reference=$$REF)" && \
+	python3 src/validate_reference.py --config config/config.yaml --row 0 && \
+	python3 src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out "$$WD/mgefinder_dataset.txt" && \
+	echo "genomes: [$$REF]" > $(PROJECT_DIR)/.mge_genomes.yaml && \
+	snakemake --configfile config/config.yaml --configfile $(PROJECT_DIR)/.mge_genomes.yaml --directory "$$WD" --printshellcmds -p -j 1 all
 
 #################################################################################
 # Self Documenting Commands                                                     #

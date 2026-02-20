@@ -1,14 +1,17 @@
-# MGEfinder pipeline config. WD = working directory for Snakemake (dataset, 00.genome, 00.assembly, etc.).
-wd: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david
+# MGEfinder pipeline config.
+# data_dir = root for raw data, metadata, reference_comparison_sets (assemblies, fastq, etc.)
+# wd = pipeline working dir; outputs (00.genome, 00.assembly, bam, mgefinder, database, results) go under wd
+data_dir: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david
+wd: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/processed/mgefinder
 
-# Data paths (relative to wd unless absolute)
+# Data paths (relative to data_dir)
 assemblies_dir: raw/assemblies
 fastq_dir: raw/fastq
 metadata_file: final/metadata_final_curated_slimmed.tsv
 reference_comparison_sets: processed/mgefinder/reference_comparison_sets.tsv
 n_set_to_run: 1  # 1 = first row only, -1 = all rows (one Snakemake run per row)
 
-# Dataset table produced by generate_mgefinder_dataset.py (path relative to wd)
+# Dataset table produced by generate_mgefinder_dataset.py (path relative to wd; written to wd/)
 mgefinder_dataset: mgefinder_dataset.txt
 
 # Pipeline output dirs (created by Snakemake; relative to wd)
@@ -26,6 +29,9 @@ results_dir: results
 memory: 16000
 
 # MGEfinder parameters (from denovo.original.config.yml)
+# MGEfinder config parameters (find, pair, inferseq_, etc.) 
+# All those entries match the MGEfinder denovo.original.config.yml from the GitHub repo. 
+# Values (e.g. minlen: 8, mincount: 2, minq: 20) are the same as in that file.
 find:
   minlen: 8
   mincount: 2

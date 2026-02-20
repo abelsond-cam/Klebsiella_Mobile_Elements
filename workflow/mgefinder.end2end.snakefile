@@ -2,7 +2,11 @@
 # snakemake -s mgefinder.end2end.snakefile --configfile /nfs/users/nfs_a/aw27/aw27/conda/mgefinder/lib/python3.8/site-packages/mgefinder-1.0.6-py3.8.egg/mgefinder/workflow/denovo.original.config.yml   --config memory=16000 wd=  --profile /nfs/users/nfs_a/aw27/.config/snakemake/lsf --default-resources mem_mb=16000 --restart-times 3 --rerun-incomplete
 # It currently expects a table mgefinder_dataset.txt with the file locations which is parsed by Snakemake (at the begining of the pipeline) into dictionaries. If all the assemblies/reads are in the the same directory, this can be simplified. You'll have to re-download the reads yourself. Probably easier to explain on a quick call.
 
-conda: "dependencies.yaml"
+# MGEfinder end-to-end: BWA, formatbam, Bowtie2 index, MGEfinder find/pair/inferseq/makedatabase/clusterseq/genotype/summarize/makefasta.
+# Entrypoint: workflow/Snakefile (includes this file). Run: snakemake -s workflow/Snakefile --configfile config/config.yaml --directory <WD> [targets]
+# Dataset TSV: data_dir, sample_id, sample_name, gff, contigs. SEGMENT comments mark parts for isolated testing.
+
+conda: "../envs/mgefinder.yaml"
 
 import os
 from os.path import basename, join
@@ -10,6 +14,9 @@ from os.path import basename, join
 WD = config.get("wd", "")
 if WD:
     WD = os.path.abspath(WD)
+DATA_DIR = config.get("data_dir", WD)
+if DATA_DIR:
+    DATA_DIR = os.path.abspath(DATA_DIR)
 
 GENOME_DIR = join(WD, config["genome_dir"])
 ASSEMBLY_DIR = join(WD, config['assembly_dir'])
@@ -60,8 +67,8 @@ def get_assembly():
     return sample2filename 
 
 def get_reference_path(wildcards):
-    """Resolve reference assembly path (supports .fna, .fa, .fna.gz, .fa.gz)."""
-    base = join(WD, config["assemblies_dir"], wildcards.genome)
+    """Resolve reference assembly path (supports .fna, .fa, .fna.gz, .fa.gz). Assemblies live under data_dir."""
+    base = join(DATA_DIR, config["assemblies_dir"], wildcards.genome)
     for ext in [".fna", ".fa", ".fna.gz", ".fa.gz"]:
         p = base + ext
         if os.path.exists(p):
@@ -87,38 +94,66 @@ def get_samples():
 
 
 SAMPLES = get_samples()
-GENOMES = config.get("genomes", ["PAO1"])
+# Get genomes from config (injected via .mge_genomes.yaml) - fail fast if missing
+try:
+    GENOMES = config["genomes"]
+    if not GENOMES:
+        raise KeyError("genomes list is empty")
+except KeyError:
+    raise SystemExit("ERROR: 'genomes' not found in config. Pipeline requires genomes to be set via --configfile .mge_genomes.yaml")
 
 
 rule all:
     input:
-        expand(join(RESULTS_DIR, '{genome}/04.makefasta.{genome}.all_seqs.fna'), genome=GENOMES)
+        expand(join(RESULTS_DIR, "{genome}/04.makefasta.{genome}.all_seqs.fna"), genome=GENOMES)
     run:
         pass
 
+# --- SEGMENT: Setup (copy_genome, copy_assembly) ---
+# Reference from config (assemblies_dir + genome name); assemblies from dataset TSV (contigs column).
 rule copy_genome:
     input:
-        "/lustre/scratch125/pam/teams/team216/aw27/all_paerug/transposon_insertions/mgefinder/bwa/{genome}.fna"
+        ref = lambda wc: get_reference_path(wc),
     output:
-        "00.genome/{genome}.fna"
+        join(GENOME_DIR, "{genome}.fna"),
     shell:
-        """cp {input} {output}"""
+        """
+        echo ">>> copy_genome: preparing reference {wildcards.genome} -> {output}"
+        if [[ "{input.ref}" == *.gz ]]; then
+            gunzip -c "{input.ref}" > "{output}"
+        else
+            cp "{input.ref}" "{output}"
+        fi
+        """
 
 rule copy_assembly:
     input:
-        assembly = lambda wc: assembly_dict[wc.sample],  
+        assembly = lambda wc: assembly_dict[wc.sample],
     output:
-        "00.assembly/{sample}.fna"
+        join(ASSEMBLY_DIR, "{sample}.fna"),
     shell:
-        """ln -s {input} {output} """
+        """
+        echo ">>> copy_assembly: preparing assembly {wildcards.sample} -> {output}"
+        if [[ "{input.assembly}" == *.gz ]]; then
+            gunzip -c "{input.assembly}" > "{output}"
+        else
+            ln -sf "{input.assembly}" "{output}"
+        fi
+        """
 
+# --- SEGMENT: BWA (bwa_index, bwa, formatbam) ---
 rule formatbam:
     input:
         "bwa/{sample}.{genome}.bwa.sam"
     output:
         temp("00.bam/{sample}.{genome}.bam")
+    conda:
+        "../envs/mgefinder.yaml"
     shell:
-        """mgefinder formatbam  {input} {output}"""
+        """
+        echo ">>> formatbam: {wildcards.sample} {wildcards.genome} -> {output}"
+        mgefinder formatbam  {input} {output}
+        """
 
 
 rule bwa_index:
@@ -127,7 +162,10 @@ rule bwa_index:
     output:
         "00.genome/{genome}.fna.amb",
     shell:
-        """bwa index {input} {output}"""
+        """
+        echo ">>> bwa_index: indexing reference {wildcards.genome}"
+        bwa index {input} {output}
+        """
 
 rule bwa:
     input:
@@ -142,9 +180,12 @@ rule bwa:
     output: 
         sample=temp("bwa/{sample}.{genome}.bwa.sam")
     shell:
-        """bwa mem {input.genome} {input.fastq1} {input.fastq2}   -o  {output.sample}"""
-        
+        """
+        echo ">>> bwa: aligning {wildcards.sample} -> {wildcards.genome}"
+        bwa mem {input.genome} {input.fastq1} {input.fastq2}   -o  {output.sample}
+        """
 
+# --- SEGMENT: Index (index_genome_bowtie2, index_assembly) ---
 rule index_genome_bowtie2:
     log: join(GENOME_DIR, "log/{genome}.index_bowtie2.log")
     benchmark: join(GENOME_DIR, "log/{genome}.index_bowtie2.benchmark.txt")
@@ -159,6 +200,7 @@ rule index_genome_bowtie2:
         revtwo=join(GENOME_DIR, "{genome}.fna.rev.2.bt2")
     shell:
         """
+        echo ">>> index_genome_bowtie2: indexing {wildcards.genome}"
         bowtie2-build {input} {input} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
         """
@@ -177,11 +219,12 @@ rule index_assembly:
         revtwo=join(ASSEMBLY_DIR, "{sample}.fna.rev.2.bt2")
     shell:
         """
+        echo ">>> index_assembly: indexing assembly {wildcards.sample}"
         bowtie2-build {input} {input} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
         """
 
-
+# --- SEGMENT: MGEfinder find / pair ---
 rule find:
     log: join(MUSTACHE_DIR, "{genome}/{sample}/log/{sample}.{genome}.find.log")
     benchmark: join(MUSTACHE_DIR, "{genome}/{sample}/log/{sample}.{genome}.find.benchmark.txt")
@@ -203,6 +246,7 @@ rule find:
         check_bwa=config['find']['check_bwa_flag']
     shell:
         """
+        echo ">>> find: MGEfinder find {wildcards.sample} {wildcards.genome}"
         mgefinder find -id {params.sample} -minlen {params.minlen} -mincount {params.mincount} -minq {params.minq} \
         -minial {params.minial} -mindist {params.mindist} -minratio {params.minratio} -maxir {params.maxir} -lins \
         {params.lins} -mcc {params.mcc} {params.check_bwa} {input.bam} -o {output.find} 1> {log} 2> {log}.err || \
@@ -227,12 +271,13 @@ rule pair:
         lins=config['pair']['lins']
     shell:
         """
+        echo ">>> pair: MGEfinder pair {wildcards.sample} {wildcards.genome}"
         mgefinder pair -maxdr {params.maxdr} -minq {params.minq} -minial {params.minial} -maxjsp {params.maxjsp} \
         -lins {params.lins} {input.find} {input.bam} {input.genome} -o {output.pair} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
         """
 
-
+# --- SEGMENT: MGEfinder inferseq (assembly, reference, overlap) ---
 rule inferseq_assembly:
     log: join(MUSTACHE_DIR, "{genome}/{sample}/log/{sample}.{genome}.inferseq_assembly.log")
     benchmark: join(MUSTACHE_DIR, "{genome}/{sample}/log/{sample}.{genome}.inferseq_assembly.benchmark.txt")
@@ -252,6 +297,7 @@ rule inferseq_assembly:
         minsize=config['inferseq_assembly']['minsize']
     shell:
         """
+        echo ">>> inferseq_assembly: {wildcards.sample} {wildcards.genome}"
         mgefinder inferseq-assembly -minident {params.minident} -maxclip {params.maxclip} -maxsize {params.maxsize} \
         -minsize {params.minsize} {input.pair} {input.bam} {input.recover_assembly} {input.recover_reference} -o {output.recover} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
@@ -274,6 +320,7 @@ rule inferseq_reference:
         minsize=config['inferseq_reference']['minsize']
     shell:
         """
+        echo ">>> inferseq_reference: {wildcards.sample} {wildcards.genome}"
         mgefinder inferseq-reference -minident {params.minident} -maxclip {params.maxclip} -maxsize {params.maxsize} \
         -minsize {params.minsize} {input.pair} {input.recover_reference} -o {output.recover} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
@@ -293,10 +340,12 @@ rule inferseq_overlap:
         minsize=config['inferseq_overlap']['minsize']
     shell:
         """
+        echo ">>> inferseq_overlap: {wildcards.sample} {wildcards.genome}"
         mgefinder inferseq-overlap -minscore {params.minscore} -minopi {params.minopi} -minsize {params.minsize} \
         {input.pair} -o {output.outfile} 1> {log} 2> {log}.err
         """
 
+# --- SEGMENT: MGEfinder database (make_inferseq_file_path_list, make_database, inferseq_database, file lists) ---
 rule make_inferseq_file_path_list:
     input:
         expand(join(MUSTACHE_DIR, '{{genome}}/{sample}/03.inferseq_assembly.{sample}.{{genome}}.tsv'), sample=SAMPLES),
@@ -326,6 +375,7 @@ rule make_database:
         maxsize=config['makedatabase']['maxsize'],
     shell:
         """
+        echo ">>> make_database: building database for {wildcards.genome}"
         mgefinder makedatabase -minsize {params.minsize} -maxsize {params.maxsize} --threads {threads} \
         --memory {params.memory} -o {params.outdir} -p {params.prefix} {input}  --force
         """
@@ -346,6 +396,7 @@ rule inferseq_database:
         maxedgedist=config['inferseq_database']['maxedgedist']
     shell:
         """
+        echo ">>> inferseq_database: {wildcards.sample} {wildcards.genome}"
         mgefinder inferseq-database -minident {params.minident} -maxclip {params.maxclip} -maxedgedist \
         {params.maxedgedist} {input.pair} {input.database} -o {output.outfile} 1> {log} 2> {log}.err
         """
@@ -363,6 +414,7 @@ rule make_inferseq_database_file_path_list:
             for f in input:
                 outfile.write(f+'\n')
 
+# --- SEGMENT: MGEfinder clusterseq, genotype, summarize, makefasta ---
 rule clusterseq:
     input:
         join(MUSTACHE_DIR, '{genome}/{genome}.all_inferseq_database.txt')
@@ -377,6 +429,7 @@ rule clusterseq:
         maxsize=config['clusterseq']['maxsize'],
     shell:
         """
+        echo ">>> clusterseq: clustering sequences for {wildcards.genome}"
         mgefinder clusterseq -minsize {params.minsize} -maxsize {params.maxsize} --threads {threads} \
         --memory {params.memory} {input} -o {output}
         """
@@ -426,6 +479,7 @@ rule summarize:
         prefix=join(RESULTS_DIR, '{genome}/03.summarize.{genome}')
     shell:
         """
+        echo ">>> summarize: summarizing results for {wildcards.genome}"
         mgefinder summarize {input} -o {params.prefix} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
         """
@@ -444,6 +498,7 @@ rule makefasta:
         prefix=join(RESULTS_DIR, '{genome}/04.makefasta.{genome}')
     shell:
         """
+        echo ">>> makefasta: extracting fasta for {wildcards.genome}"
         mgefinder makefasta {input} -o {params.prefix} 1> {log} 2> {log}.err || \
         (cat {log}.err; exit 1)
         """

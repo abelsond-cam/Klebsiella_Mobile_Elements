@@ -57,20 +57,29 @@ def main() -> None:
     path_by_sample: dict[str, str] = {}
     old_prefix = args.path_prefix_old
     new_prefix = args.path_prefix_new
+    print(f"Path conversion: {old_prefix} -> {new_prefix}")
+    
+    converted_count = 0
     with open(args.assembly_list) as f:
         for line in f:
             path = line.strip()
             if not path:
                 continue
+            original_path = path
             path = os.path.abspath(path)
             if old_prefix and new_prefix and path.startswith(old_prefix):
                 path = new_prefix + path[len(old_prefix) :]
+                converted_count += 1
+                if converted_count <= 3:  # Show first few conversions
+                    print(f"  Converted: {original_path} -> {path}")
             basename = os.path.basename(path)
             for ext in (".fa.gz", ".fna.gz", ".fasta.gz"):
                 if basename.endswith(ext):
                     sample_id = basename[: -len(ext)]
                     path_by_sample[sample_id] = path
                     break
+    
+    print(f"Converted {converted_count} paths from {old_prefix} to {new_prefix}")
 
     # Load metadata
     df = pd.read_csv(args.metadata, sep="\t", low_memory=False)
@@ -116,6 +125,11 @@ def main() -> None:
         if os.path.lexists(link_path):
             skipped_existing += 1
             continue
+        
+        # Show first few symlinks being created
+        if created < 3:
+            print(f"Creating symlink: {link_path} -> {target}")
+        
         os.symlink(target, link_path)
         created += 1
 

@@ -12,8 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Default base dir for FASTQ (overridden by --config or --fastq-dir)
-DEFAULT_FASTQ_DIR = Path("/home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/raw/fastq")
+# No default FASTQ dir - require explicit --config or --fastq-dir
 
 
 def check_fastq_exists(outdir: Path, sample_id: str) -> bool:
@@ -32,7 +31,7 @@ def check_fastq_exists(outdir: Path, sample_id: str) -> bool:
 
 
 def download_fastq(
-    accessions: list[str],
+    accessions: list,
     output_base_dir: Path,
     skip_existing: bool = True,
 ) -> dict:
@@ -76,7 +75,7 @@ def download_fastq(
     return results
 
 
-def get_accessions_from_args(args: argparse.Namespace) -> list[str]:
+def get_accessions_from_args(args: argparse.Namespace) -> list:
     """Resolve list of sample_accessions from --ids-file, --ids, or select_genomes(--n)."""
     if args.ids_file is not None:
         path = Path(args.ids_file)
@@ -95,19 +94,25 @@ def get_accessions_from_args(args: argparse.Namespace) -> list[str]:
 
 
 def get_fastq_dir(args: argparse.Namespace) -> Path:
-    """Resolve fastq output base dir from --config, --fastq-dir, or default."""
+    """Resolve fastq output base dir from --config or --fastq-dir. Fail if neither works."""
     if args.fastq_dir is not None:
         return Path(args.fastq_dir).resolve()
+    
     if args.config is not None and args.config.exists():
         try:
             import yaml
             with open(args.config) as f:
                 cfg = yaml.safe_load(f)
-            wd = Path(cfg["wd"]).resolve()
-            return wd / cfg["fastq_dir"]
+            
+            if "fastq_dir" not in cfg:
+                raise SystemExit("Error: config missing 'fastq_dir' key")
+            
+            data_dir = Path(cfg.get("data_dir", cfg["wd"])).resolve()
+            return data_dir / cfg["fastq_dir"]
         except Exception as e:
-            print(f"Warning: could not read fastq_dir from config: {e}", file=sys.stderr)
-    return DEFAULT_FASTQ_DIR.resolve()
+            raise SystemExit(f"Error: could not read fastq_dir from config: {e}")
+    
+    raise SystemExit("Error: must provide either --config (with fastq_dir) or --fastq-dir")
 
 
 if __name__ == "__main__":

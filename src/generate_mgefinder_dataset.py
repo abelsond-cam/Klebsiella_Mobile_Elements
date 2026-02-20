@@ -8,14 +8,15 @@ paths under assemblies_dir (supports .fna.gz, .fa.gz, .fna, .fa), and writes a
 
 Usage:
   For first row only (n_set_to_run=1):
-    python scripts/generate_mgefinder_dataset.py --config config/config.yaml --out mgefinder_dataset.txt
+    python src/generate_mgefinder_dataset.py --config config/config.yaml --out mgefinder_dataset.txt
   For a specific row (when caller loops for n_set_to_run=-1):
-    python scripts/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out mgefinder_dataset.txt
+    python src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out mgefinder_dataset.txt
 """
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -24,7 +25,7 @@ import pandas as pd
 ASSEMBLY_EXTENSIONS = (".fna.gz", ".fa.gz", ".fna", ".fa")
 
 
-def discover_assembly_path(assemblies_dir: Path, sample_name: str) -> Path | None:
+def discover_assembly_path(assemblies_dir: Path, sample_name: str) -> Optional[Path]:
     """Return path to assembly file for sample_name, or None if not found."""
     for ext in ASSEMBLY_EXTENSIONS:
         p = assemblies_dir / f"{sample_name}{ext}"
@@ -79,11 +80,12 @@ def main() -> None:
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
+    data_dir = Path(config.get("data_dir", config["wd"])).resolve()
     wd = Path(config["wd"]).resolve()
-    assemblies_dir = wd / config["assemblies_dir"]
-    fastq_dir = wd / config["fastq_dir"]
-    metadata_path = wd / config["metadata_file"]
-    refcomp_path = wd / config["reference_comparison_sets"]
+    assemblies_dir = data_dir / config["assemblies_dir"]
+    fastq_dir = data_dir / config["fastq_dir"]
+    metadata_path = data_dir / config["metadata_file"]
+    refcomp_path = data_dir / config["reference_comparison_sets"]
 
     if not refcomp_path.exists():
         raise SystemExit(f"Error: reference_comparison_sets not found: {refcomp_path}")
@@ -105,6 +107,7 @@ def main() -> None:
     sample_ids = [s.strip() for s in str(mge_comparison_set).split(",") if s.strip()]
 
     meta = load_metadata(metadata_path)
+    meta = meta.astype({"sample_accession": str})
     accession_to_sample = meta.set_index("sample_accession")["Sample"].to_dict()
 
     out_path = args.out if args.out.is_absolute() else wd / args.out

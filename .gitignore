@@ -16,3 +16,6 @@ data/
 # IDE
 .idea/
 .vscode/
+
+# Temp config overlay (pipeline target)
+.mge_genomes.yaml
