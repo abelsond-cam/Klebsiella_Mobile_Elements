@@ -1,4 +1,4 @@
-.PHONY: clean data data-legacy lint requirements fetch_data pipeline pipeline-verbose test-n1 dry-run test-dry test-dry-skip-dl submit-hpc recreate-symlinks test-mgefinder-env test_environment create_environment help
+.PHONY: clean data data-legacy lint requirements fetch_data pipeline pipeline-verbose test dry-run test-dry test-dry-skip-dl submit-hpc recreate-symlinks test-mgefinder-env test_environment create_environment help
 
 #################################################################################
 # GLOBALS                                                                       #
@@ -45,21 +45,22 @@ requirements: test_environment
 data:
 	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml
 
-## Test with 1 sample only (safe for login node; skips FASTQ download - use if sample already present)
-test-n1:
-	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --verbose --skip-download
+test-n ?= 1
+## Test run with N samples (default 1). Usage: make test test-n=10 or make test test-n=1. Skips FASTQ download.
+test:
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n $(test-n) --verbose --skip-download
 
 ## Dry run: show what would be done (safe for login node)
 dry-run:
 	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --dry-run --verbose
 
-## Test dry run with 1 sample (safest for login node)
+## Test dry run with N samples (default 1). Usage: make test-dry test-n=10
 test-dry:
-	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --dry-run --verbose
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n $(test-n) --dry-run --verbose
 
-## Skip downloads if FASTQ already exists (useful for testing)
+## Skip downloads if FASTQ already exists (useful for testing). Usage: make test-dry-skip-dl test-n=10
 test-dry-skip-dl:
-	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n 1 --dry-run --verbose --skip-download
+	$(call activate-snake) && python3 src/run_pipeline.py --config config/config.yaml --test-n $(test-n) --dry-run --verbose --skip-download
 
 ## Submit full pipeline to HPC scheduler (adjust scripts/submit_hpc.sh first)
 submit-hpc:
