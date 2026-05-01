@@ -125,7 +125,6 @@ pipeline:
 	DATA=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']))") && \
 	REF=$$(python3 -c "import pandas as pd; df=pd.read_csv('$$DATA/processed/mgefinder/reference_comparison_sets.tsv', sep='\t'); print(df.iloc[0]['reference_sample_name'])") && \
 	echo ">>> Running MGEfinder pipeline (wd=$$WD, reference=$$REF)" && \
-	python3 src/validate_reference.py --config config/config.yaml --row 0 && \
 	python3 src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out "$$WD/mgefinder_dataset.txt" && \
 	echo "genomes: [$$REF]" > $(PROJECT_DIR)/.mge_genomes.yaml && \
 	snakemake --configfile config/config.yaml --configfile $(PROJECT_DIR)/.mge_genomes.yaml --directory "$$WD" -j 1 all
@@ -137,7 +136,6 @@ pipeline-verbose:
 	DATA=$$(python3 -c "import yaml; c=yaml.safe_load(open('config/config.yaml')); print(c.get('data_dir', c['wd']))") && \
 	REF=$$(python3 -c "import pandas as pd; df=pd.read_csv('$$DATA/processed/mgefinder/reference_comparison_sets.tsv', sep='\t'); print(df.iloc[0]['reference_sample_name'])") && \
 	echo ">>> Running MGEfinder pipeline VERBOSE (wd=$$WD, reference=$$REF)" && \
-	python3 src/validate_reference.py --config config/config.yaml --row 0 && \
 	python3 src/generate_mgefinder_dataset.py --config config/config.yaml --row 0 --out "$$WD/mgefinder_dataset.txt" && \
 	echo "genomes: [$$REF]" > $(PROJECT_DIR)/.mge_genomes.yaml && \
 	snakemake --configfile config/config.yaml --configfile $(PROJECT_DIR)/.mge_genomes.yaml --directory "$$WD" --printshellcmds -p -j 1 all

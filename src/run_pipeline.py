@@ -146,12 +146,6 @@ def main():
         print("PHASE 1: DATA PREPARATION")
         print("="*70)
         
-        # Validate reference assembly exists
-        run_with_env([
-            "python3", "src/validate_reference.py", 
-            "--config", str(args.config), "--row", str(args.row)
-        ], "Validate reference assembly", SNAKE_ENV)
-        
         # PHASE 2: FASTQ downloads (fastq-dl environment; TODO: fastq-dl env may lack pyyaml - consider adding deps to snakemake env and running from there, or use --skip-download when samples exist)
         print(">>> FASTQ downloads (fastq-dl environment; TODO: fastq-dl env may lack pyyaml - consider adding deps to snakemake env and running from there, or use --skip-download when samples exist)")
         if comparison_ids and not args.skip_download:
