@@ -32,56 +32,66 @@ def _stats(xs: list):
     return (sum(xs) / len(xs), min(xs), max(xs))
 
 
-def resolve_sl_reference(csv_path: Path, sample_accessions: list, sublineage: str):
-    """Per-SL level-d reference from the panaroo best-reference CSV.
+def resolve_sl_reference(csv_path: Path, sample_accessions: list,
+                         sublineage: str, level: str = "f"):
+    """Per-SL reference from the panaroo best-reference CSV at a given level.
 
-    Joins CSV column 'Sample' == metadata sample_accession (the CSV 'run'
-    column is unreliable for split SLs, e.g. SL258_part_*, and must NOT be
-    used as the SL key). Enforces a single distinct ref_d across the matched
-    samples (fail-fast — no silent modal pick). shared_d/shared_f vary per
-    sample, so they are summarised as (mean, min, max).
+    `level` selects the ref_<level>/shared_<level> column pair: 'f' = ref_f
+    (MGH 78578 universal basal), 'd' = ref_d (per-SL level-d). Joins CSV
+    'Sample' == metadata sample_accession (the CSV 'run' column is unreliable
+    for split SLs, e.g. SL258_part_*, and must NOT be used as the SL key).
+    Enforces a single distinct ref_<level> across the matched samples
+    (fail-fast — no silent modal pick). shared_d/shared_f vary per sample and
+    are always summarised (mean, min, max) so the d-vs-f delta can be printed
+    regardless of the chosen level.
 
-    Returns (ref_d, shared_d_stats, shared_f_stats, n_matched, n_total), or
-    (None, None, None, 0, n_total) if no SL sample is present in the CSV.
+    Returns (ref, shared_chosen_stats, shared_d_stats, shared_f_stats,
+    n_matched, n_total), or (None, None, None, None, 0, n_total) if no SL
+    sample is present in the CSV.
     """
     if not csv_path.exists():
         raise SystemExit(f"Error: best_reference_csv not found: {csv_path}")
+    ref_col = f"ref_{level}"
     wanted = set(sample_accessions)
-    ref_d_counts: dict = {}
+    ref_counts: dict = {}
     shared_d: list = []
     shared_f: list = []
+    shared_chosen: list = []
     with open(csv_path, newline="") as fh:
         reader = csv.DictReader(fh)
-        for col in ("Sample", "ref_d", "shared_d", "shared_f"):
+        for col in ("Sample", ref_col, "shared_d", "shared_f",
+                    f"shared_{level}"):
             if reader.fieldnames is None or col not in reader.fieldnames:
                 raise SystemExit(f"Error: {csv_path} missing required column '{col}'")
         for row in reader:
             if row["Sample"] not in wanted:
                 continue
-            rd = (row["ref_d"] or "").strip()
-            if not rd:
+            rv = (row[ref_col] or "").strip()
+            if not rv:
                 continue
-            ref_d_counts[rd] = ref_d_counts.get(rd, 0) + 1
+            ref_counts[rv] = ref_counts.get(rv, 0) + 1
             for raw, acc in ((row.get("shared_d"), shared_d),
-                             (row.get("shared_f"), shared_f)):
+                             (row.get("shared_f"), shared_f),
+                             (row.get(f"shared_{level}"), shared_chosen)):
                 try:
                     acc.append(float(raw))
                 except (TypeError, ValueError):
                     pass
     n_total = len(wanted)
-    n_matched = sum(ref_d_counts.values())
+    n_matched = sum(ref_counts.values())
     if n_matched == 0:
-        return None, None, None, 0, n_total
-    if len(ref_d_counts) > 1:
+        return None, None, None, None, 0, n_total
+    if len(ref_counts) > 1:
         dist = ", ".join(f"{k}={v}" for k, v in
-                         sorted(ref_d_counts.items(), key=lambda kv: -kv[1]))
+                         sorted(ref_counts.items(), key=lambda kv: -kv[1]))
         raise SystemExit(
             f"Error: QC failed — sublineage {sublineage} has "
-            f"{len(ref_d_counts)} distinct level-d references among "
-            f"{n_matched} matched samples: {dist}. Expected exactly one; "
+            f"{len(ref_counts)} distinct level-{level} references ({ref_col}) "
+            f"among {n_matched} matched samples: {dist}. Expected exactly one; "
             f"refusing to pick one silently.")
-    ref_d = next(iter(ref_d_counts))
-    return ref_d, _stats(shared_d), _stats(shared_f), n_matched, n_total
+    ref = next(iter(ref_counts))
+    return (ref, _stats(shared_chosen), _stats(shared_d), _stats(shared_f),
+            n_matched, n_total)
 
 
 def get_reference_info(config: dict, args, config_path: Path) -> tuple:
@@ -107,9 +117,13 @@ def get_reference_info(config: dict, args, config_path: Path) -> tuple:
         comparison_ids = [ln.split("\t")[0].strip()
                           for ln in out.splitlines() if ln.strip()]
 
-        # Per-SL level-d reference (overrides the basal reference_sample_name).
-        # Resolved over the FULL SL (independent of --test-n/validate_n) so the
-        # ref_d uniqueness QC and the shared-content summary are meaningful.
+        # Per-SL reference from the best-reference CSV at the chosen level
+        # (default 'f' = ref_f = MGH 78578 basal; 'd' = ref_d level-d). The
+        # --reference-level flag makes each job's reference DETERMINISTIC
+        # regardless of later config/code changes. Resolved over the FULL SL
+        # (independent of --test-n/validate_n) so the ref uniqueness QC and
+        # the shared-content summary are meaningful.
+        level = args.reference_level or config.get("reference_level", "f")
         csv_path = config.get("best_reference_csv")
         if csv_path:
             full_cmd = ["python3", "src/generate_mgefinder_dataset.py",
@@ -119,24 +133,21 @@ def get_reference_info(config: dict, args, config_path: Path) -> tuple:
                                       check=True).stdout
             full_ids = [ln.split("\t")[0].strip()
                         for ln in full_out.splitlines() if ln.strip()]
-            ref_d, sd, sf, nm, nt = resolve_sl_reference(
-                Path(csv_path), full_ids, sublineage)
-            if ref_d is None:
+            ref, sc, sd, sf, nm, nt = resolve_sl_reference(
+                Path(csv_path), full_ids, sublineage, level)
+            if ref is None:
                 print(f">>> Warning: no {sublineage} samples in {csv_path}; "
                       f"falling back to basal reference {ref_name}",
                       file=sys.stderr)
-            elif ref_d == ref_name:
-                print(f">>> level-d ref {ref_d}: same as basal MGH78578 "
-                      f"({ref_name}); shared content unchanged "
-                      f"(matched {nm}/{nt})")
             else:
-                print(f">>> level-d ref {ref_d} (basal was {ref_name}); "
-                      f"matched {nm}/{nt} {sublineage} samples; "
-                      f"shared_d mean {sd[0]:.0f} (range {sd[1]:.0f}-{sd[2]:.0f}) "
-                      f"vs MGH78578 shared_f mean {sf[0]:.0f} "
-                      f"(range {sf[1]:.0f}-{sf[2]:.0f}), "
-                      f"delta {sd[0] - sf[0]:+.0f}")
-                ref_name = ref_d
+                delta = sd[0] - sf[0]
+                print(f">>> reference-level {level}: {sublineage} -> {ref} "
+                      f"(matched {nm}/{nt}); shared_{level} mean {sc[0]:.0f} "
+                      f"(range {sc[1]:.0f}-{sc[2]:.0f}). "
+                      f"level-d vs level-f(MGH78578): shared_d mean {sd[0]:.0f} "
+                      f"vs shared_f mean {sf[0]:.0f} (delta {delta:+.0f}"
+                      f"{'; this run uses level-f = MGH78578 baseline' if level == 'f' else ''})")
+                ref_name = ref
 
         print(f">>> Sublineage {sublineage}: {len(comparison_ids)} sample(s); "
               f"reference={ref_name}")
@@ -246,6 +257,12 @@ def main():
     parser.add_argument("--stream-fastq", action="store_true",
                         help="Per-sample download via Snakemake, deleted after bwa "
                              "(for whole-SL runs). Overrides config stream_fastq.")
+    parser.add_argument("--reference-level", choices=["f", "d"], default=None,
+                        help="Which best_reference_per_sample.csv level to use as "
+                             "the per-SL reference: 'f' = ref_f (MGH 78578 basal, "
+                             "default), 'd' = ref_d (per-SL level-d). Overrides "
+                             "config reference_level. Makes the reference "
+                             "deterministic per job.")
     args = parser.parse_args()
     
     # Environment names (micromamba; no --use-conda so Snakemake never invokes conda)

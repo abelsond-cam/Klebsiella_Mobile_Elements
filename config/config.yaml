@@ -22,6 +22,7 @@ reference_sample_name: GCF_000016305.1_ASM1630v1_genomic   # MGH 78578 — unive
 # reference_sample_name in sublineage mode; ref_d uniqueness is QC'd fail-fast and
 # shared_d vs MGH78578 shared_f is printed. Unset/blank => use reference_sample_name.
 best_reference_csv: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/processed/pangenome_analysis/granularity/best_reference_per_sample.csv
+reference_level: f   # which CSV level to use as the per-SL reference: f = ref_f (MGH 78578 basal, default), d = ref_d (level-d). CLI --reference-level overrides; set per job for determinism.
 validate_n: 1   # limit selected samples for small validation runs; -1 = all samples in the sublineage
 
 # Whole-SL streaming: when true, each sample's reads are downloaded on demand by
