@@ -101,7 +101,12 @@ def get_reference_name(config: dict, args, meta: pd.DataFrame) -> str:
     ref = args.reference_sample_name or config.get("reference_sample_name")
     if ref:
         return str(ref)
-    # legacy fallback
+    # No explicit reference. Only consult the legacy reference_comparison_sets
+    # TSV when legacy row mode is explicitly requested — never silently default.
+    if not args.legacy_row:
+        raise SystemExit(
+            "Error: no reference_sample_name (config or --reference-sample-name) "
+            "and not in legacy --legacy-row mode. Refusing to guess a reference.")
     data_dir = Path(config.get("data_dir", config["wd"])).resolve()
     refcomp = pd.read_csv(data_dir / config["reference_comparison_sets"], sep="\t")
     return str(refcomp.iloc[args.row]["reference_sample_name"])
@@ -110,6 +115,9 @@ def get_reference_name(config: dict, args, meta: pd.DataFrame) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
+    parser.add_argument("--wd", type=Path, default=None,
+                        help="Override config 'wd' (must match run_pipeline --output-dir "
+                             "so stream-fastq paths point at the run's 00.fastq).")
     parser.add_argument("--out", type=Path, default=Path("mgefinder_dataset.txt"))
     parser.add_argument("--row", type=int, default=0, metavar="N",
                         help="Legacy reference_comparison_sets row index")
@@ -141,6 +149,8 @@ def main() -> None:
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
+    if args.wd is not None:
+        config["wd"] = str(args.wd)
     data_dir = Path(config.get("data_dir", config["wd"])).resolve()
     wd = Path(config["wd"]).resolve()
     fastq_dir = data_dir / config["fastq_dir"]
@@ -181,6 +191,19 @@ def main() -> None:
     for _, r in selected.iterrows():
         sample_id = str(r["sample_accession"]).strip()
         sample_name = str(r["Sample"]).strip()
+
+        # Skip read-less entries: RefSeq/assembly-only genomes (is_refseq=True,
+        # GCF_* accession, no run_accession_used) have no short reads to align.
+        # Including them breaks the bwa DAG (nothing produces their FASTQ).
+        is_refseq = str(r.get("is_refseq", "")).strip().lower() in ("true", "1", "yes")
+        run_used = str(r.get("run_accession_used", "")).strip()
+        no_run = run_used == "" or run_used.lower() in ("nan", "na", "none")
+        if is_refseq or no_run or sample_id.startswith("GCF_"):
+            print(f"Skipping read-less sample {sample_id} "
+                  f"(is_refseq={is_refseq}, run_accession_used={run_used or 'n/a'})",
+                  file=sys.stderr)
+            continue
+
         contigs = resolve_under_base(base, r["assembly_file"])
         if contigs is None or not contigs.exists():
             print(f"Warning: assembly missing for {sample_id}: {contigs}, skipping",

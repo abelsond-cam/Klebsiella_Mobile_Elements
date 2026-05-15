@@ -104,20 +104,34 @@ def get_assembly():
     return sample2filename 
 
 def get_reference_path(wildcards):
-    """Resolve the reference assembly path.
+    """Resolve the reference assembly path. NEVER silently default.
 
-    Preferred: reference_assembly_path injected by run_pipeline.py (resolved from
-    the metadata assembly_file column). Fallback (legacy): glob assemblies_dir
-    under data_dir for {genome}.{fna,fa,fna.gz,fa.gz}. copy_genome gunzips .gz."""
+    Sublineage mode: run_pipeline.py injects reference_assembly_path (resolved
+    from the metadata assembly_file column). It MUST be set and exist on disk.
+    Legacy (non-sublineage / reference_comparison_sets) mode ONLY: glob
+    assemblies_dir under data_dir for {genome}.{fna,fa,fna.gz,fa.gz}.
+    copy_genome gunzips .gz. Any unresolved case raises (fail loud)."""
     ref = config.get("reference_assembly_path")
-    if ref and os.path.exists(ref):
-        return ref
+    if ref:
+        if os.path.exists(ref):
+            return ref
+        raise FileNotFoundError(
+            f"reference_assembly_path set but not on disk: {ref} "
+            f"(genome={wildcards.genome}). Refusing to fall back silently.")
+    if config.get("sublineage"):
+        raise FileNotFoundError(
+            f"No reference_assembly_path injected for genome={wildcards.genome} "
+            f"in sublineage mode. Refusing to glob/guess a reference — check "
+            f"run_pipeline.py reference resolution.")
     base = join(DATA_DIR, config["assemblies_dir"], wildcards.genome)
     for ext in [".fna", ".fa", ".fna.gz", ".fa.gz"]:
         p = base + ext
         if os.path.exists(p):
             return p
-    return base + ".fna"
+    raise FileNotFoundError(
+        f"Legacy reference assembly not found for genome={wildcards.genome} "
+        f"under {join(DATA_DIR, config['assemblies_dir'])} "
+        f"({{.fna,.fa,.fna.gz,.fa.gz}}). Refusing to default.")
 
 assembly_dict = get_assembly_dict()
 data_dict = get_data_dict()

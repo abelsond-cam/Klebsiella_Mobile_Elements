@@ -17,7 +17,7 @@ n_set_to_run: 1  # legacy (reference_comparison_sets row mode): 1 = first row on
 # (the RDS project root = parent of data_dir).
 metadata_path_base: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw
 sublineage: SL39                                            # metadata Sublineage column value to select
-reference_sample_name: GCF_000814305.1_ASM81430v1_genomic   # external reference (same as trial); must be a metadata row
+reference_sample_name: GCF_000016305.1_ASM1630v1_genomic   # MGH 78578 — universal/basal Kp reference (is_mgh78578=True); = level-f ref in best_reference_per_sample.csv
 validate_n: 1   # limit selected samples for small validation runs; -1 = all samples in the sublineage
 
 # Whole-SL streaming: when true, each sample's reads are downloaded on demand by

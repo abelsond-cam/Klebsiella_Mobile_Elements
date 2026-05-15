@@ -135,6 +135,10 @@ def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Run MGEfinder pipeline")
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Override config 'wd': all pipeline outputs (00.bam, "
+                             "00.fastq, mgefinder, database, results) go here. "
+                             "Use to isolate a run (e.g. .../mgefinder/SL39).")
     parser.add_argument("--row", type=int, default=0, help="Legacy: row from reference_comparison_sets")
     parser.add_argument("--sublineage", default=None, help="Metadata Sublineage to select (overrides config)")
     parser.add_argument("--reference-sample-name", dest="reference_sample_name", default=None,
@@ -157,7 +161,11 @@ def main():
     FASTQ_ENV = "fastq-dl"         # FASTQ downloads only
     
     config = load_config(args.config)
+    if args.output_dir is not None:
+        config["wd"] = str(args.output_dir)
+        print(f">>> --output-dir override: wd = {args.output_dir}")
     wd = Path(config["wd"]).resolve()
+    wd.mkdir(parents=True, exist_ok=True)
     ref_name, comparison_ids = get_reference_info(config, args, args.config)
     
     print(f">>> Pipeline setup: wd={wd}, reference={ref_name}")
@@ -207,6 +215,8 @@ def main():
             "--out", str(dataset_path),
             "--ref-out", str(ref_path_file),
         ]
+        if args.output_dir is not None:
+            gen_cmd += ["--wd", str(wd)]
         sublineage = args.sublineage or config.get("sublineage")
         if sublineage:
             gen_cmd += ["--sublineage", sublineage]
@@ -232,6 +242,10 @@ def main():
         merged["wd"] = str(wd)
         merged["data_dir"] = str(Path(config.get("data_dir", config["wd"])).resolve())
         merged["genomes"] = [ref_name]
+        # --stream-fastq is a CLI flag; propagate the effective value into the
+        # merged config so both check_first_inputs and the Snakefile see it
+        # (config.yaml may still say stream_fastq: false).
+        merged["stream_fastq"] = bool(args.stream_fastq or config.get("stream_fastq", False))
         ref_path_file = wd / "mgefinder_reference_path.txt"
         if ref_path_file.exists():
             merged["reference_assembly_path"] = ref_path_file.read_text().strip()
