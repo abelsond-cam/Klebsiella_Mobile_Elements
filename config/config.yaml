@@ -6,11 +6,19 @@ data_dir: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david
 wd: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/processed/mgefinder
 
 # Data paths (relative to data_dir)
-assemblies_dir: raw/assemblies
+assemblies_dir: raw/assemblies   # legacy fallback only; assemblies now resolved from metadata assembly_file
 fastq_dir: raw/fastq
 metadata_file: final/metadata_final_curated_slimmed.tsv
-reference_comparison_sets: processed/mgefinder/reference_comparison_sets.tsv
-n_set_to_run: 1  # 1 = first row only, -1 = all rows (one Snakemake run per row)
+reference_comparison_sets: processed/mgefinder/reference_comparison_sets.tsv  # legacy/temporary; superseded by metadata-driven selection below
+n_set_to_run: 1  # legacy (reference_comparison_sets row mode): 1 = first row only, -1 = all rows
+
+# Metadata-driven sample selection (the proper replacement for reference_comparison_sets.tsv).
+# assembly_file / gff_file columns in the metadata are relative to metadata_path_base
+# (the RDS project root = parent of data_dir).
+metadata_path_base: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw
+sublineage: SL39                                            # metadata Sublineage column value to select
+reference_sample_name: GCF_000814305.1_ASM81430v1_genomic   # external reference (same as trial); must be a metadata row
+validate_n: 1   # limit selected samples for small validation runs; -1 = all samples in the sublineage
 
 # Dataset table produced by generate_mgefinder_dataset.py (path relative to wd; written to wd/)
 mgefinder_dataset: mgefinder_dataset.txt

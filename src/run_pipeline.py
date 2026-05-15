@@ -23,27 +23,46 @@ def load_config(config_path: Path) -> dict:
     return config
 
 
-def get_reference_info(config: dict, row: int = 0, test_n: int = None) -> tuple:
-    """Get reference name and comparison set IDs from TSV."""
+def get_reference_info(config: dict, args, config_path: Path) -> tuple:
+    """Resolve (ref_name, comparison_ids) for the run.
+
+    Sublineage mode (proper): ref_name from config['reference_sample_name'];
+    sample accessions obtained from generate_mgefinder_dataset.py --print-accessions
+    (single source of truth for selection). Legacy mode: reference_comparison_sets row.
+    """
+    sublineage = args.sublineage or config.get("sublineage")
+    test_n = args.test_n
+
+    if sublineage:
+        ref_name = config.get("reference_sample_name") or args.reference_sample_name
+        if not ref_name:
+            raise SystemExit("Error: sublineage mode requires config 'reference_sample_name'")
+        cmd = ["python3", "src/generate_mgefinder_dataset.py",
+               "--config", str(config_path), "--sublineage", sublineage,
+               "--print-accessions"]
+        if test_n is not None and test_n > 0:
+            cmd += ["--limit", str(test_n)]
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+        comparison_ids = [ln.split("\t")[0].strip()
+                          for ln in out.splitlines() if ln.strip()]
+        print(f">>> Sublineage {sublineage}: {len(comparison_ids)} sample(s); "
+              f"reference={ref_name}")
+        return ref_name, comparison_ids
+
+    # Legacy reference_comparison_sets row mode
     data_dir = Path(config.get("data_dir", config["wd"])).resolve()
     refcomp_path = data_dir / config["reference_comparison_sets"]
-    
     if not refcomp_path.exists():
         raise SystemExit(f"Error: reference_comparison_sets not found: {refcomp_path}")
-    
     df = pd.read_csv(refcomp_path, sep="\t")
-    if row >= len(df):
-        raise SystemExit(f"Error: row {row} out of range")
-    
-    row_data = df.iloc[row]
+    if args.row >= len(df):
+        raise SystemExit(f"Error: row {args.row} out of range")
+    row_data = df.iloc[args.row]
     ref_name = row_data["reference_sample_name"]
     comparison_ids = [s.strip() for s in str(row_data["mge_comparison_set"]).split(",") if s.strip()]
-    
-    # Limit samples for testing
     if test_n is not None and test_n > 0:
         comparison_ids = comparison_ids[:test_n]
         print(f">>> TEST MODE: Limited to {len(comparison_ids)} samples (--test-n {test_n})")
-    
     return ref_name, comparison_ids
 
 
@@ -86,15 +105,10 @@ def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
         fastq1_path, fastq2_path = Path(parts[5]), Path(parts[6])
     sample_data_dir = Path(data_dir_str)
 
-    assemblies_dir = data_dir / merged.get("assemblies_dir", "raw/assemblies")
-    ref_path = None
-    for ext in (".fna", ".fa", ".fna.gz", ".fa.gz"):
-        cand = assemblies_dir / (ref_name + ext)
-        if cand.exists():
-            ref_path = cand
-            break
-    if ref_path is None:
-        print(f"Error: reference assembly not found (looked for {ref_name}{{.fna,.fa,.fna.gz,.fa.gz}} under {assemblies_dir})", file=sys.stderr)
+    ref_path = merged.get("reference_assembly_path")
+    if not ref_path or not Path(ref_path).exists():
+        print(f"Error: reference assembly not found: {ref_path} "
+              f"(resolved from metadata for reference '{ref_name}')", file=sys.stderr)
         sys.exit(1)
 
     if not Path(contigs).exists():
@@ -117,7 +131,10 @@ def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Run MGEfinder pipeline")
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
-    parser.add_argument("--row", type=int, default=0, help="Row from reference_comparison_sets")
+    parser.add_argument("--row", type=int, default=0, help="Legacy: row from reference_comparison_sets")
+    parser.add_argument("--sublineage", default=None, help="Metadata Sublineage to select (overrides config)")
+    parser.add_argument("--reference-sample-name", dest="reference_sample_name", default=None,
+                        help="Reference genome name (overrides config)")
     parser.add_argument("--fetch-only", action="store_true", help="Only fetch data, don't run pipeline")
     parser.add_argument("--pipeline-only", action="store_true", help="Only run pipeline, skip fetch")
     parser.add_argument("--verbose", action="store_true", help="Use verbose Snakemake output")
@@ -134,7 +151,7 @@ def main():
     
     config = load_config(args.config)
     wd = Path(config["wd"]).resolve()
-    ref_name, comparison_ids = get_reference_info(config, args.row, args.test_n)
+    ref_name, comparison_ids = get_reference_info(config, args, args.config)
     
     print(f">>> Pipeline setup: wd={wd}, reference={ref_name}")
     print(f">>> Comparison samples: {len(comparison_ids)} ({', '.join(comparison_ids[:3])}{'...' if len(comparison_ids) > 3 else ''})")
@@ -167,23 +184,22 @@ def main():
         print("PHASE 1b: DATASET GENERATION")
         print("="*70)
         
-        # Generate dataset (limited for testing if needed)
+        # Generate dataset (sublineage mode; --limit for small validation runs)
         dataset_path = wd / "mgefinder_dataset.txt"
+        ref_path_file = wd / "mgefinder_reference_path.txt"
+        gen_cmd = [
+            "python3", "src/generate_mgefinder_dataset.py",
+            "--config", str(args.config),
+            "--row", str(args.row),
+            "--out", str(dataset_path),
+            "--ref-out", str(ref_path_file),
+        ]
+        sublineage = args.sublineage or config.get("sublineage")
+        if sublineage:
+            gen_cmd += ["--sublineage", sublineage]
         if args.test_n is not None:
-            run_with_env([
-                "python3", "src/generate_mgefinder_dataset_limited.py",
-                "--config", str(args.config),
-                "--row", str(args.row),
-                "--test-n", str(args.test_n),
-                "--out", str(dataset_path)
-            ], f"Generate LIMITED dataset ({args.test_n} samples)", SNAKE_ENV)
-        else:
-            run_with_env([
-                "python3", "src/generate_mgefinder_dataset.py",
-                "--config", str(args.config),
-                "--row", str(args.row),
-                "--out", str(dataset_path)
-            ], f"Generate dataset", SNAKE_ENV)
+            gen_cmd += ["--limit", str(args.test_n)]
+        run_with_env(gen_cmd, "Generate dataset", SNAKE_ENV)
         
         if args.fetch_only:
             print(f"\n>>> Fetch completed. Dataset: {dataset_path}")
@@ -201,6 +217,13 @@ def main():
         merged["wd"] = str(wd)
         merged["data_dir"] = str(Path(config.get("data_dir", config["wd"])).resolve())
         merged["genomes"] = [ref_name]
+        ref_path_file = wd / "mgefinder_reference_path.txt"
+        if ref_path_file.exists():
+            merged["reference_assembly_path"] = ref_path_file.read_text().strip()
+            print(f">>> Reference assembly: {merged['reference_assembly_path']}")
+        else:
+            print(f">>> Warning: {ref_path_file} not found; Snakefile will fall back to "
+                  f"assemblies_dir glob for reference '{ref_name}'", file=sys.stderr)
         merged_yaml = Path("config/.mge_merged_config.yaml")
         merged_yaml.parent.mkdir(parents=True, exist_ok=True)
         with open(merged_yaml, "w") as f:

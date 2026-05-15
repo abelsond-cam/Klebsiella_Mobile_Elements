@@ -1,9 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=mgefinder
-#SBATCH --time=04:00:00
-#SBATCH --mem=32G
+#SBATCH --time=01:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=icelake
+#SBATCH --partition=icelake-himem
 #SBATCH --account=FLOTO-SL2-CPU
 #SBATCH --output=mgefinder_trial_%j.log
 #SBATCH --error=mgefinder_trial_%j.err

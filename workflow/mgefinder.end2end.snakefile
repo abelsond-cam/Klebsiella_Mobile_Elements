@@ -103,7 +103,14 @@ def get_assembly():
     return sample2filename 
 
 def get_reference_path(wildcards):
-    """Resolve reference assembly path (supports .fna, .fa, .fna.gz, .fa.gz). Assemblies live under data_dir."""
+    """Resolve the reference assembly path.
+
+    Preferred: reference_assembly_path injected by run_pipeline.py (resolved from
+    the metadata assembly_file column). Fallback (legacy): glob assemblies_dir
+    under data_dir for {genome}.{fna,fa,fna.gz,fa.gz}. copy_genome gunzips .gz."""
+    ref = config.get("reference_assembly_path")
+    if ref and os.path.exists(ref):
+        return ref
     base = join(DATA_DIR, config["assemblies_dir"], wildcards.genome)
     for ext in [".fna", ".fa", ".fna.gz", ".fa.gz"]:
         p = base + ext
