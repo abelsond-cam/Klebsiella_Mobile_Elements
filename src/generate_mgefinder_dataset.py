@@ -123,6 +123,10 @@ def main() -> None:
                         default=None, help="Reference genome name (overrides config)")
     parser.add_argument("--ref-out", type=Path, default=None,
                         help="Write resolved reference assembly path here (default: <out dir>/mgefinder_reference_path.txt)")
+    parser.add_argument("--stream-fastq", action="store_true",
+                        help="Don't require FASTQ on disk; point fastq1/fastq2 at "
+                             "wd/00.fastq/<id>_{1,2}.fastq.gz (produced+deleted by the "
+                             "download_fastq Snakemake rule). Overrides config stream_fastq.")
     parser.add_argument("--print-accessions", action="store_true",
                         help="Print 'sample_accession<TAB>run_accession_used' for selected samples and exit")
     args = parser.parse_args()
@@ -142,6 +146,7 @@ def main() -> None:
     fastq_dir = data_dir / config["fastq_dir"]
     metadata_path = data_dir / config["metadata_file"]
     base = Path(config.get("metadata_path_base", str(data_dir.parent))).resolve()
+    stream_fastq = args.stream_fastq or bool(config.get("stream_fastq", False))
 
     if not metadata_path.exists():
         raise SystemExit(f"Error: metadata not found: {metadata_path}")
@@ -185,14 +190,19 @@ def main() -> None:
         gff_str = str(gff) if gff is not None and gff.exists() else "."
 
         sample_fastq_dir = fastq_dir / sample_id
-        fastq_pair = discover_fastq_pair(sample_fastq_dir)
-        if fastq_pair is None:
-            run_used = str(r.get("run_accession_used", "")).strip()
-            print(f"Warning: no FASTQ pair in {sample_fastq_dir} "
-                  f"(run_accession_used={run_used or 'n/a'}); download then re-run. Skipping.",
-                  file=sys.stderr)
-            continue
-        fastq1, fastq2 = fastq_pair
+        if stream_fastq:
+            # download_fastq rule will create (and Snakemake will temp()-delete) these.
+            fastq1 = wd / "00.fastq" / f"{sample_id}_1.fastq.gz"
+            fastq2 = wd / "00.fastq" / f"{sample_id}_2.fastq.gz"
+        else:
+            fastq_pair = discover_fastq_pair(sample_fastq_dir)
+            if fastq_pair is None:
+                run_used = str(r.get("run_accession_used", "")).strip()
+                print(f"Warning: no FASTQ pair in {sample_fastq_dir} "
+                      f"(run_accession_used={run_used or 'n/a'}); download then re-run. Skipping.",
+                      file=sys.stderr)
+                continue
+            fastq1, fastq2 = fastq_pair
         rows_out.append({
             "data_dir": str(sample_fastq_dir),
             "sample_id": sample_id,

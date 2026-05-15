@@ -118,6 +118,10 @@ def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
     if not has_fastq_cols:
         print("Error: dataset has no fastq1/fastq2 columns; re-run dataset generation to get 7-column format.", file=sys.stderr)
         sys.exit(1)
+    if merged.get("stream_fastq"):
+        # FASTQ are produced on demand by the download_fastq rule; not on disk yet.
+        print(">>> stream_fastq: skipping FASTQ existence check (downloaded per-sample at run time)")
+        return
     f1, f2 = fastq1_path, fastq2_path
     if not f1.exists() or not f2.exists():
         print(f"Error: FASTQ pair not found for sample {sample_id}:", file=sys.stderr)
@@ -142,6 +146,9 @@ def main():
     parser.add_argument("--test-n", type=int, help="TEST MODE: Limit to first N comparison samples")
     parser.add_argument("--dry-run", action="store_true", help="Snakemake dry run (-n)")
     parser.add_argument("--skip-download", action="store_true", help="Skip FASTQ download step")
+    parser.add_argument("--stream-fastq", action="store_true",
+                        help="Per-sample download via Snakemake, deleted after bwa "
+                             "(for whole-SL runs). Overrides config stream_fastq.")
     args = parser.parse_args()
     
     # Environment names (micromamba; no --use-conda so Snakemake never invokes conda)
@@ -163,9 +170,15 @@ def main():
         print("PHASE 1: DATA PREPARATION")
         print("="*70)
         
-        # PHASE 2: FASTQ downloads (fastq-dl environment; TODO: fastq-dl env may lack pyyaml - consider adding deps to snakemake env and running from there, or use --skip-download when samples exist)
-        print(">>> FASTQ downloads (fastq-dl environment; TODO: fastq-dl env may lack pyyaml - consider adding deps to snakemake env and running from there, or use --skip-download when samples exist)")
-        if comparison_ids and not args.skip_download:
+        stream_fastq = args.stream_fastq or bool(config.get("stream_fastq", False))
+
+        # PHASE 2: FASTQ downloads. Skipped entirely in stream_fastq mode — the
+        # download_fastq Snakemake rule fetches each sample on demand and temp()-
+        # deletes it after bwa (peak disk ~= one sample; needed for whole-SL runs).
+        if stream_fastq:
+            print("\n>>> stream_fastq: per-sample download handled by Snakemake "
+                  "(reads deleted after bwa); skipping bulk download")
+        elif comparison_ids and not args.skip_download:
             print("\n" + "="*70)
             print("PHASE 2: FASTQ DOWNLOADS")
             print("="*70)
@@ -197,6 +210,8 @@ def main():
         sublineage = args.sublineage or config.get("sublineage")
         if sublineage:
             gen_cmd += ["--sublineage", sublineage]
+        if stream_fastq:
+            gen_cmd += ["--stream-fastq"]
         if args.test_n is not None:
             gen_cmd += ["--limit", str(args.test_n)]
         run_with_env(gen_cmd, "Generate dataset", SNAKE_ENV)

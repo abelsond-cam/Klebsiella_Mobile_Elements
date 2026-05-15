@@ -84,6 +84,12 @@ Always build paths with the `join(<DIR>, ...)` helpers (e.g. `BAM_DIR`, `GENOME_
 sides — never mix a relative literal with a `join()`ed absolute path. See
 [docs/BAM_and_find_rule.md](docs/BAM_and_find_rule.md).
 
+**Whole-SL runs:** set `stream_fastq: true` so the `download_fastq` rule fetches each
+sample's reads on demand as `temp()` outputs that Snakemake deletes right after `bwa`
+(peak FASTQ disk ≈ one sample with `-j 1`). Default `false` uses pre-downloaded reads on
+disk. See [docs/streaming_fastq.md](docs/streaming_fastq.md) (incl. the compute-node
+internet caveat).
+
 The Snakefile prints `MGEfinder paths: data_dir (read) = ... | wd (write) = ...` at parse time
 — check this first when debugging path issues. `# --- SEGMENT: ... ---` comments delimit
 pipeline stages for isolated testing.

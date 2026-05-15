@@ -21,6 +21,7 @@ GENOME_DIR = join(WD, config.get("genome_dir", "00.genome"))
 ASSEMBLY_DIR = join(WD, config.get('assembly_dir', "00.assembly"))
 BAM_DIR = join(WD, config.get('bam_dir', "00.bam"))
 BWA_DIR = join(WD, "bwa")
+FASTQ_STREAM_DIR = join(WD, "00.fastq")  # stream_fastq mode: temp() reads, deleted after bwa
 MUSTACHE_DIR = join(WD, config.get('mgefinder_dir', "mgefinder"))
 DATABASE_DIR = join(WD, config.get('database_dir', "database"))
 RESULTS_DIR = join(WD, config.get('results_dir', "results"))
@@ -148,6 +149,12 @@ except KeyError:
     raise SystemExit("ERROR: 'genomes' not found in config. Run the pipeline via: make test-dry-skip-dl (or data/dry-run) so run_pipeline.py injects genomes.")
 
 
+# Accessions are alphanumeric (e.g. SAMD00108880, DRR122560); keeps the
+# download_fastq output wildcard from swallowing other path components.
+wildcard_constraints:
+    acc=r"[A-Za-z0-9]+"
+
+
 rule all:
     input:
         expand(join(RESULTS_DIR, "{genome}/04.makefasta.{genome}.all_seqs.fna"), genome=GENOMES)
@@ -186,7 +193,37 @@ rule copy_assembly:
         fi
         """
 
-# --- SEGMENT: BWA (bwa_index, bwa, formatbam) ---
+# --- SEGMENT: BWA (download_fastq, bwa_index, bwa, formatbam) ---
+# stream_fastq mode only: fetch one sample's reads on demand as temp() outputs.
+# bwa is the sole consumer, so Snakemake deletes each sample's FASTQ as soon as
+# bwa finishes (with -j 1 -> serial download/align/delete; peak disk ~= 1 sample).
+# fastq-dl lives in its own micromamba env; we shell into it regardless of the
+# env Snakemake runs in. fastq-dl names files after the run accession, so we
+# normalise whatever pair it produces to {acc}_{1,2}.fastq.gz.
+rule download_fastq:
+    output:
+        r1=temp(join(FASTQ_STREAM_DIR, "{acc}_1.fastq.gz")),
+        r2=temp(join(FASTQ_STREAM_DIR, "{acc}_2.fastq.gz")),
+    params:
+        d=FASTQ_STREAM_DIR,
+    shell:
+        r'''
+        set -euo pipefail
+        tmp="{params.d}/.dl_{wildcards.acc}"
+        rm -rf "$tmp"; mkdir -p "$tmp"
+        echo ">>> download_fastq: fastq-dl {wildcards.acc} -> {output.r1}"
+        micromamba run -n fastq-dl fastq-dl --accession {wildcards.acc} --outdir "$tmp"
+        f1=$(ls "$tmp"/*_1.fastq.gz "$tmp"/*_1.fq.gz 2>/dev/null | head -1 || true)
+        f2=$(ls "$tmp"/*_2.fastq.gz "$tmp"/*_2.fq.gz 2>/dev/null | head -1 || true)
+        if [ -z "$f1" ] || [ -z "$f2" ]; then
+            echo "ERROR: no paired FASTQ produced for {wildcards.acc}" >&2
+            ls -l "$tmp" >&2; exit 1
+        fi
+        mv "$f1" "{output.r1}"
+        mv "$f2" "{output.r2}"
+        rm -rf "$tmp"
+        '''
+
 rule formatbam:
     input:
         join(BWA_DIR, "{sample}.{genome}.bwa.sam")

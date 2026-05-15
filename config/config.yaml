@@ -20,6 +20,12 @@ sublineage: SL39                                            # metadata Sublineag
 reference_sample_name: GCF_000814305.1_ASM81430v1_genomic   # external reference (same as trial); must be a metadata row
 validate_n: 1   # limit selected samples for small validation runs; -1 = all samples in the sublineage
 
+# Whole-SL streaming: when true, each sample's reads are downloaded on demand by
+# the Snakemake download_fastq rule and temp()-deleted right after bwa, so peak
+# FASTQ disk ~= one sample (run with -j 1 for strict serial download/align/delete).
+# Leave false for the small validation runs (uses pre-downloaded FASTQ on disk).
+stream_fastq: false
+
 # Dataset table produced by generate_mgefinder_dataset.py (path relative to wd; written to wd/)
 mgefinder_dataset: mgefinder_dataset.txt
 
