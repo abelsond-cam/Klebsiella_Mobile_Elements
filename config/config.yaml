@@ -18,6 +18,10 @@ n_set_to_run: 1  # legacy (reference_comparison_sets row mode): 1 = first row on
 metadata_path_base: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw
 sublineage: SL39                                            # metadata Sublineage column value to select
 reference_sample_name: GCF_000016305.1_ASM1630v1_genomic   # MGH 78578 — universal/basal Kp reference (is_mgh78578=True); = level-f ref in best_reference_per_sample.csv
+# When set, the per-SL level-d reference (ref_d, joined by sample_accession) overrides
+# reference_sample_name in sublineage mode; ref_d uniqueness is QC'd fail-fast and
+# shared_d vs MGH78578 shared_f is printed. Unset/blank => use reference_sample_name.
+best_reference_csv: /home/dca36/rds/rds-floto-bacterial-4k08a2yyQLw/david/processed/pangenome_analysis/granularity/best_reference_per_sample.csv
 validate_n: 1   # limit selected samples for small validation runs; -1 = all samples in the sublineage
 
 # Whole-SL streaming: when true, each sample's reads are downloaded on demand by

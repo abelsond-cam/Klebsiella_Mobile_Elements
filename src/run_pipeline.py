@@ -2,6 +2,7 @@
 """Pipeline runner: Snakemake from snakemake env; MGEfinder tools via conda in Snakefile."""
 
 import argparse
+import csv
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,66 @@ def load_config(config_path: Path) -> dict:
             raise SystemExit(f"Error: missing required config key: {key}")
     
     return config
+
+
+def _stats(xs: list):
+    """(mean, min, max) or NaNs if empty."""
+    if not xs:
+        nan = float("nan")
+        return (nan, nan, nan)
+    return (sum(xs) / len(xs), min(xs), max(xs))
+
+
+def resolve_sl_reference(csv_path: Path, sample_accessions: list, sublineage: str):
+    """Per-SL level-d reference from the panaroo best-reference CSV.
+
+    Joins CSV column 'Sample' == metadata sample_accession (the CSV 'run'
+    column is unreliable for split SLs, e.g. SL258_part_*, and must NOT be
+    used as the SL key). Enforces a single distinct ref_d across the matched
+    samples (fail-fast — no silent modal pick). shared_d/shared_f vary per
+    sample, so they are summarised as (mean, min, max).
+
+    Returns (ref_d, shared_d_stats, shared_f_stats, n_matched, n_total), or
+    (None, None, None, 0, n_total) if no SL sample is present in the CSV.
+    """
+    if not csv_path.exists():
+        raise SystemExit(f"Error: best_reference_csv not found: {csv_path}")
+    wanted = set(sample_accessions)
+    ref_d_counts: dict = {}
+    shared_d: list = []
+    shared_f: list = []
+    with open(csv_path, newline="") as fh:
+        reader = csv.DictReader(fh)
+        for col in ("Sample", "ref_d", "shared_d", "shared_f"):
+            if reader.fieldnames is None or col not in reader.fieldnames:
+                raise SystemExit(f"Error: {csv_path} missing required column '{col}'")
+        for row in reader:
+            if row["Sample"] not in wanted:
+                continue
+            rd = (row["ref_d"] or "").strip()
+            if not rd:
+                continue
+            ref_d_counts[rd] = ref_d_counts.get(rd, 0) + 1
+            for raw, acc in ((row.get("shared_d"), shared_d),
+                             (row.get("shared_f"), shared_f)):
+                try:
+                    acc.append(float(raw))
+                except (TypeError, ValueError):
+                    pass
+    n_total = len(wanted)
+    n_matched = sum(ref_d_counts.values())
+    if n_matched == 0:
+        return None, None, None, 0, n_total
+    if len(ref_d_counts) > 1:
+        dist = ", ".join(f"{k}={v}" for k, v in
+                         sorted(ref_d_counts.items(), key=lambda kv: -kv[1]))
+        raise SystemExit(
+            f"Error: QC failed — sublineage {sublineage} has "
+            f"{len(ref_d_counts)} distinct level-d references among "
+            f"{n_matched} matched samples: {dist}. Expected exactly one; "
+            f"refusing to pick one silently.")
+    ref_d = next(iter(ref_d_counts))
+    return ref_d, _stats(shared_d), _stats(shared_f), n_matched, n_total
 
 
 def get_reference_info(config: dict, args, config_path: Path) -> tuple:
@@ -45,6 +106,38 @@ def get_reference_info(config: dict, args, config_path: Path) -> tuple:
         out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
         comparison_ids = [ln.split("\t")[0].strip()
                           for ln in out.splitlines() if ln.strip()]
+
+        # Per-SL level-d reference (overrides the basal reference_sample_name).
+        # Resolved over the FULL SL (independent of --test-n/validate_n) so the
+        # ref_d uniqueness QC and the shared-content summary are meaningful.
+        csv_path = config.get("best_reference_csv")
+        if csv_path:
+            full_cmd = ["python3", "src/generate_mgefinder_dataset.py",
+                        "--config", str(config_path), "--sublineage", sublineage,
+                        "--print-accessions", "--limit", "-1"]
+            full_out = subprocess.run(full_cmd, capture_output=True, text=True,
+                                      check=True).stdout
+            full_ids = [ln.split("\t")[0].strip()
+                        for ln in full_out.splitlines() if ln.strip()]
+            ref_d, sd, sf, nm, nt = resolve_sl_reference(
+                Path(csv_path), full_ids, sublineage)
+            if ref_d is None:
+                print(f">>> Warning: no {sublineage} samples in {csv_path}; "
+                      f"falling back to basal reference {ref_name}",
+                      file=sys.stderr)
+            elif ref_d == ref_name:
+                print(f">>> level-d ref {ref_d}: same as basal MGH78578 "
+                      f"({ref_name}); shared content unchanged "
+                      f"(matched {nm}/{nt})")
+            else:
+                print(f">>> level-d ref {ref_d} (basal was {ref_name}); "
+                      f"matched {nm}/{nt} {sublineage} samples; "
+                      f"shared_d mean {sd[0]:.0f} (range {sd[1]:.0f}-{sd[2]:.0f}) "
+                      f"vs MGH78578 shared_f mean {sf[0]:.0f} "
+                      f"(range {sf[1]:.0f}-{sf[2]:.0f}), "
+                      f"delta {sd[0] - sf[0]:+.0f}")
+                ref_name = ref_d
+
         print(f">>> Sublineage {sublineage}: {len(comparison_ids)} sample(s); "
               f"reference={ref_name}")
         return ref_name, comparison_ids
@@ -214,6 +307,11 @@ def main():
             "--row", str(args.row),
             "--out", str(dataset_path),
             "--ref-out", str(ref_path_file),
+            # ref_name is the authoritative reference (basal, or per-SL ref_d
+            # from resolve_sl_reference). Pass it so the generator resolves the
+            # SAME genome's assembly — generate's --reference-sample-name wins
+            # over config, closing any divergence with merged["genomes"].
+            "--reference-sample-name", str(ref_name),
         ]
         if args.output_dir is not None:
             gen_cmd += ["--wd", str(wd)]
