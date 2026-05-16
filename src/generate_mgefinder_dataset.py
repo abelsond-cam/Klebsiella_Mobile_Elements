@@ -136,7 +136,17 @@ def main() -> None:
                              "wd/00.fastq/<id>_{1,2}.fastq.gz (produced+deleted by the "
                              "download_fastq Snakemake rule). Overrides config stream_fastq.")
     parser.add_argument("--print-accessions", action="store_true",
-                        help="Print 'sample_accession<TAB>run_accession_used' for selected samples and exit")
+                        help="Print 'sample_accession<TAB>run_accession_used' for the "
+                             "USABLE samples (after read-less/missing-assembly/drop-file "
+                             "filters) and exit")
+    parser.add_argument("--read-pool", type=Path, default=None,
+                        help="Consume reads from a shared per-SL pool: fastq cols point "
+                             "at <pool>/reads/<sample_id>_{1,2}.fastq.gz (no on-disk "
+                             "check; the producer guarantees presence per chunk).")
+    parser.add_argument("--drop-file", type=Path, default=None,
+                        help="TSV/text whose first column lists sample_accessions to "
+                             "exclude (permanently-undownloadable). Used for the final "
+                             "aggregate run so SAMPLES = successful set.")
     args = parser.parse_args()
 
     try:
@@ -164,11 +174,57 @@ def main() -> None:
     meta = load_metadata(metadata_path)
     selected = select_samples(meta, config, args)
 
+    # Drop set: sample_accessions to exclude (permanently-undownloadable).
+    dropped: set = set()
+    if args.drop_file is not None and args.drop_file.exists():
+        for line in args.drop_file.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            acc = line.split("\t")[0].strip()
+            if acc and acc.lower() != "sample_accession":
+                dropped.add(acc)
+        print(f">>> drop-file: excluding {len(dropped)} accession(s) from "
+              f"{args.drop_file}", file=sys.stderr)
+
+    # USABLE set: apply read-less + drop-file + missing-assembly filters ONCE so
+    # --print-accessions and the dataset writer agree exactly (a mismatch makes
+    # a chunk target reference a non-existent dataset row -> bwa KeyError).
+    usable = []
+    for _, r in selected.iterrows():
+        sample_id = str(r["sample_accession"]).strip()
+        sample_name = str(r["Sample"]).strip()
+        run_used = str(r.get("run_accession_used", "")).strip()
+
+        if sample_id in dropped:
+            print(f"Skipping dropped sample {sample_id} (in --drop-file)",
+                  file=sys.stderr)
+            continue
+
+        # Read-less entries (is_refseq / GCF_* / no run_accession_used) have no
+        # short reads; including them breaks the bwa DAG.
+        is_refseq = str(r.get("is_refseq", "")).strip().lower() in ("true", "1", "yes")
+        no_run = run_used == "" or run_used.lower() in ("nan", "na", "none")
+        if is_refseq or no_run or sample_id.startswith("GCF_"):
+            print(f"Skipping read-less sample {sample_id} "
+                  f"(is_refseq={is_refseq}, run_accession_used={run_used or 'n/a'})",
+                  file=sys.stderr)
+            continue
+
+        contigs = resolve_under_base(base, r["assembly_file"])
+        if contigs is None or not contigs.exists():
+            print(f"Warning: assembly missing for {sample_id}: {contigs}, skipping",
+                  file=sys.stderr)
+            continue
+        gff = resolve_under_base(base, r["gff_file"])
+        gff_str = str(gff) if gff is not None and gff.exists() else "."
+        usable.append({"sample_id": sample_id, "sample_name": sample_name,
+                        "run_used": run_used, "contigs": str(contigs),
+                        "gff_str": gff_str})
+
     if args.print_accessions:
-        run_col = "run_accession_used" if "run_accession_used" in selected.columns else None
-        for _, r in selected.iterrows():
-            run = str(r[run_col]).strip() if run_col else ""
-            print(f"{r['sample_accession']}\t{run}")
+        for u in usable:
+            print(f"{u['sample_id']}\t{u['run_used']}")
         return
 
     # Resolve reference assembly path from its own metadata row
@@ -188,50 +244,31 @@ def main() -> None:
     ref_out = args.ref_out or (out_path.parent / "mgefinder_reference_path.txt")
 
     rows_out = []
-    for _, r in selected.iterrows():
-        sample_id = str(r["sample_accession"]).strip()
-        sample_name = str(r["Sample"]).strip()
-
-        # Skip read-less entries: RefSeq/assembly-only genomes (is_refseq=True,
-        # GCF_* accession, no run_accession_used) have no short reads to align.
-        # Including them breaks the bwa DAG (nothing produces their FASTQ).
-        is_refseq = str(r.get("is_refseq", "")).strip().lower() in ("true", "1", "yes")
-        run_used = str(r.get("run_accession_used", "")).strip()
-        no_run = run_used == "" or run_used.lower() in ("nan", "na", "none")
-        if is_refseq or no_run or sample_id.startswith("GCF_"):
-            print(f"Skipping read-less sample {sample_id} "
-                  f"(is_refseq={is_refseq}, run_accession_used={run_used or 'n/a'})",
-                  file=sys.stderr)
-            continue
-
-        contigs = resolve_under_base(base, r["assembly_file"])
-        if contigs is None or not contigs.exists():
-            print(f"Warning: assembly missing for {sample_id}: {contigs}, skipping",
-                  file=sys.stderr)
-            continue
-        gff = resolve_under_base(base, r["gff_file"])
-        gff_str = str(gff) if gff is not None and gff.exists() else "."
-
+    for u in usable:
+        sample_id = u["sample_id"]
         sample_fastq_dir = fastq_dir / sample_id
-        if stream_fastq:
-            # download_fastq rule will create (and Snakemake will temp()-delete) these.
+        if args.read_pool is not None:
+            # Shared per-SL pool; producer guarantees presence per chunk.
+            fastq1 = args.read_pool / "reads" / f"{sample_id}_1.fastq.gz"
+            fastq2 = args.read_pool / "reads" / f"{sample_id}_2.fastq.gz"
+        elif stream_fastq:
+            # download_fastq rule will create (and Snakemake temp()-delete) these.
             fastq1 = wd / "00.fastq" / f"{sample_id}_1.fastq.gz"
             fastq2 = wd / "00.fastq" / f"{sample_id}_2.fastq.gz"
         else:
             fastq_pair = discover_fastq_pair(sample_fastq_dir)
             if fastq_pair is None:
-                run_used = str(r.get("run_accession_used", "")).strip()
                 print(f"Warning: no FASTQ pair in {sample_fastq_dir} "
-                      f"(run_accession_used={run_used or 'n/a'}); download then re-run. Skipping.",
-                      file=sys.stderr)
+                      f"(run_accession_used={u['run_used'] or 'n/a'}); "
+                      f"download then re-run. Skipping.", file=sys.stderr)
                 continue
             fastq1, fastq2 = fastq_pair
         rows_out.append({
             "data_dir": str(sample_fastq_dir),
             "sample_id": sample_id,
-            "sample_name": sample_name,
-            "gff": gff_str,
-            "contigs": str(contigs),
+            "sample_name": u["sample_name"],
+            "gff": u["gff_str"],
+            "contigs": u["contigs"],
             "fastq1": str(fastq1),
             "fastq2": str(fastq2),
         })

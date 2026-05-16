@@ -189,6 +189,63 @@ def run_with_env(cmd: list, description: str, env_name: str) -> None:
         sys.exit(1)
 
 
+def _dataset_acc_to_name(dataset_path: Path) -> dict:
+    """sample_accession (col2) -> sample_name (col3) from the 7-col dataset TSV."""
+    m = {}
+    with open(dataset_path) as f:
+        next(f, None)
+        for ln in f:
+            p = ln.rstrip("\n").split("\t")
+            if len(p) >= 3:
+                m[p[1].strip()] = p[2].strip()
+    return m
+
+
+def chunk_targets(pool: Path, chunk_k: int, dataset_path: Path,
+                   genome: str, mgefinder_dir: str, wd: Path,
+                   dropped: set) -> tuple:
+    """(target_paths, accessions) for chunk_k's 03.inferseq_* leaf outputs.
+
+    Maps pool accessions -> sample_name via the dataset TSV; skips dropped or
+    accessions absent from the dataset (avoids a bwa KeyError aborting the run).
+    """
+    chunk_file = pool / "chunks" / f"chunk_{chunk_k}.txt"
+    if not chunk_file.exists():
+        raise SystemExit(f"Error: chunk file not found: {chunk_file}")
+    acc2name = _dataset_acc_to_name(dataset_path)
+    targets, accs = [], []
+    for acc in (l.strip() for l in chunk_file.read_text().splitlines() if l.strip()):
+        if acc in dropped:
+            continue
+        name = acc2name.get(acc)
+        if name is None:
+            print(f">>> chunk {chunk_k}: {acc} not in dataset (filtered/dropped); "
+                  f"skipping", file=sys.stderr)
+            continue
+        base = f"{mgefinder_dir}/{genome}/{name}/03.inferseq_{{}}.{name}.{genome}.tsv"
+        for kind in ("assembly", "reference", "overlap"):
+            targets.append(str(wd / base.format(kind)))
+        accs.append((acc, name))
+    return targets, accs
+
+
+def mark_consumed(pool: Path, tag: str, accs: list, genome: str,
+                  mgefinder_dir: str, wd: Path) -> None:
+    """touch consumed/<tag>/<acc>.done for accs whose 3 inferseq TSVs now exist."""
+    cdir = pool / "consumed" / tag
+    cdir.mkdir(parents=True, exist_ok=True)
+    done = 0
+    for acc, name in accs:
+        ok = all((wd / mgefinder_dir / genome / name /
+                  f"03.inferseq_{k}.{name}.{genome}.tsv").exists()
+                 for k in ("assembly", "reference", "overlap"))
+        if ok:
+            (cdir / f"{acc}.done").write_text("")
+            done += 1
+    print(f">>> consumed[{tag}]: {done}/{len(accs)} chunk samples produced "
+          f"03.inferseq TSVs", file=sys.stderr)
+
+
 def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
     """Verify inputs for the first (sample, genome) exist; exit with clear message if any are missing."""
     data_dir = Path(merged["data_dir"])
@@ -225,6 +282,12 @@ def check_first_inputs(wd: Path, merged: dict, ref_name: str) -> None:
     if merged.get("stream_fastq"):
         # FASTQ are produced on demand by the download_fastq rule; not on disk yet.
         print(">>> stream_fastq: skipping FASTQ existence check (downloaded per-sample at run time)")
+        return
+    if merged.get("read_pool_mode"):
+        # Pool reads arrive per chunk (producer-owned); the first dataset row
+        # may be in a not-yet-downloaded chunk. Readiness is enforced by chunk
+        # sentinels, not an up-front check.
+        print(">>> read-pool: skipping FASTQ existence check (per-chunk readiness)")
         return
     f1, f2 = fastq1_path, fastq2_path
     if not f1.exists() or not f2.exists():
@@ -263,6 +326,25 @@ def main():
                              "default), 'd' = ref_d (per-SL level-d). Overrides "
                              "config reference_level. Makes the reference "
                              "deterministic per job.")
+    parser.add_argument("--read-pool", type=Path, default=None,
+                        help="Consume reads from a shared per-SL pool dir "
+                             "(producer-owned). Forces non-stream, skips PHASE 2 "
+                             "download; dataset fastq cols point at the pool.")
+    parser.add_argument("--chunk", type=int, default=None,
+                        help="Read-pool mode: process ONLY this chunk's accessions "
+                             "(explicit per-sample 03.inferseq targets, no cohort "
+                             "aggregation). Requires --read-pool + --consumer-tag.")
+    parser.add_argument("--consumer-tag", default=None,
+                        help="Read-pool consumer id (e.g. ref_f / ref_d) for the "
+                             "pool consumed/<tag>/<acc>.done sentinels.")
+    parser.add_argument("--aggregate-only", action="store_true",
+                        help="Read-pool mode: regenerate dataset to the successful "
+                             "set (--drop-file) and run ONLY the cohort aggregation "
+                             "(all per-sample TSVs already exist).")
+    parser.add_argument("--drop-file", type=Path, default=None,
+                        help="Drop-list (producer dropped_samples.tsv) of permanently "
+                             "undownloadable accessions; excluded at aggregation so "
+                             "SAMPLES = successful set.")
     args = parser.parse_args()
     
     # Environment names (micromamba; no --use-conda so Snakemake never invokes conda)
@@ -276,6 +358,12 @@ def main():
         print(f">>> --output-dir override: wd = {args.output_dir}")
     wd = Path(config["wd"]).resolve()
     wd.mkdir(parents=True, exist_ok=True)
+
+    read_pool = args.read_pool.resolve() if args.read_pool else None
+    pool_mode = read_pool is not None
+    if pool_mode and args.chunk is not None and not args.consumer_tag:
+        raise SystemExit("Error: --chunk requires --consumer-tag (e.g. ref_f)")
+
     ref_name, comparison_ids = get_reference_info(config, args, args.config)
     
     print(f">>> Pipeline setup: wd={wd}, reference={ref_name}")
@@ -288,12 +376,16 @@ def main():
         print("PHASE 1: DATA PREPARATION")
         print("="*70)
         
-        stream_fastq = args.stream_fastq or bool(config.get("stream_fastq", False))
+        stream_fastq = (False if pool_mode else
+                        (args.stream_fastq or bool(config.get("stream_fastq", False))))
 
-        # PHASE 2: FASTQ downloads. Skipped entirely in stream_fastq mode — the
-        # download_fastq Snakemake rule fetches each sample on demand and temp()-
-        # deletes it after bwa (peak disk ~= one sample; needed for whole-SL runs).
-        if stream_fastq:
+        # PHASE 2: FASTQ downloads. Skipped in stream_fastq mode (download_fastq
+        # rule fetches on demand) AND in read-pool mode (the external producer
+        # owns all downloads into the shared pool).
+        if pool_mode:
+            print(f"\n>>> read-pool: downloads owned by the producer "
+                  f"({read_pool}); skipping in-pipeline download")
+        elif stream_fastq:
             print("\n>>> stream_fastq: per-sample download handled by Snakemake "
                   "(reads deleted after bwa); skipping bulk download")
         elif comparison_ids and not args.skip_download:
@@ -337,6 +429,13 @@ def main():
             gen_cmd += ["--sublineage", sublineage]
         if stream_fastq:
             gen_cmd += ["--stream-fastq"]
+        if pool_mode:
+            gen_cmd += ["--read-pool", str(read_pool)]
+        # Chunk runs use the FULL usable cohort (SAMPLES=full; explicit targets
+        # drive scope). ONLY the final aggregation prunes to the successful set
+        # so expand(sample=SAMPLES) cannot deadlock on a dropped accession.
+        if args.aggregate_only and args.drop_file is not None:
+            gen_cmd += ["--drop-file", str(args.drop_file)]
         if args.test_n is not None:
             gen_cmd += ["--limit", str(args.test_n)]
         run_with_env(gen_cmd, "Generate dataset", SNAKE_ENV)
@@ -360,7 +459,9 @@ def main():
         # --stream-fastq is a CLI flag; propagate the effective value into the
         # merged config so both check_first_inputs and the Snakefile see it
         # (config.yaml may still say stream_fastq: false).
-        merged["stream_fastq"] = bool(args.stream_fastq or config.get("stream_fastq", False))
+        merged["stream_fastq"] = (False if pool_mode else
+                                  bool(args.stream_fastq or config.get("stream_fastq", False)))
+        merged["read_pool_mode"] = pool_mode
         ref_path_file = wd / "mgefinder_reference_path.txt"
         if ref_path_file.exists():
             merged["reference_assembly_path"] = ref_path_file.read_text().strip()
@@ -379,29 +480,61 @@ def main():
         
         # Run Snakemake from working environment (single config file so all keys are present)
         config_abs = merged_yaml.resolve()
-        snake_cmd = [
-            "snakemake",
-            "--configfile", str(config_abs),
-            "--directory", str(wd),
-            "-j", str(args.jobs),
-            "all"
-        ]
-        
+        # Cap concurrent FASTQ downloads (whole-SL streaming hammered ENA and
+        # the mamba lock under -j 76, aborting runs). CPU rules still use all
+        # --jobs cores; only download_fastq (resources: dl_slots=1) is throttled
+        # to dl_slots. --keep-going so one bad sample doesn't waste the other
+        # ~99% of in-progress work (resubmit then resumes via the DAG).
+        mgefinder_dir = config.get("mgefinder_dir", "mgefinder")
+        snake_base = ["snakemake", "--configfile", str(config_abs),
+                      "--directory", str(wd), "-j", str(args.jobs)]
+        chunk_accs = None
+        if pool_mode and args.chunk is not None and not args.aggregate_only:
+            # Per-chunk: explicit 03.inferseq leaf targets only — NEVER `all`,
+            # so the expand(sample=SAMPLES) cohort barrier is not in the DAG.
+            dropped = set()
+            if args.drop_file is not None and args.drop_file.exists():
+                dropped = {l.split("\t")[0].strip()
+                           for l in args.drop_file.read_text().splitlines()
+                           if l.strip() and not l.startswith("sample_accession")}
+            targets, chunk_accs = chunk_targets(
+                read_pool, args.chunk, dataset_path, ref_name,
+                mgefinder_dir, wd, dropped)
+            if not targets:
+                raise SystemExit(f"Error: chunk {args.chunk} has no resolvable "
+                                 f"targets (all dropped/filtered?)")
+            snake_cmd = snake_base + ["--rerun-incomplete", "--keep-going"] + targets
+        elif pool_mode and args.aggregate_only:
+            # All per-sample TSVs already exist; SAMPLES = successful set
+            # (dataset regenerated with --drop-file). Run the cohort barrier.
+            snake_cmd = snake_base + ["--rerun-incomplete", "all"]
+        else:
+            # Legacy stream / non-stream whole-run (download_fastq in DAG).
+            dl_slots = int(merged.get("download_concurrency", 12))
+            snake_cmd = snake_base + ["--resources", f"dl_slots={dl_slots}",
+                                      "--keep-going", "all"]
+
         if args.verbose:
             snake_cmd.extend(["--printshellcmds", "-p"])
-        
+
         if args.dry_run:
             snake_cmd.append("-n")
-        
+
         action = "DRY RUN Snakemake pipeline" if args.dry_run else "Run Snakemake pipeline"
         run_with_env(snake_cmd, action, MGEFINDER_ENV)
-        
+
         if args.dry_run:
             print(f"\n>>> Dry run completed - no files were created")
             print(f"    To run for real: remove --dry-run flag")
         else:
-            print(f"\n>>> Pipeline completed successfully!")
-            print(f"    Results in: {wd}/results/{ref_name}/")
+            if chunk_accs is not None:
+                mark_consumed(read_pool, args.consumer_tag, chunk_accs,
+                              ref_name, mgefinder_dir, wd)
+                print(f"\n>>> Chunk {args.chunk} ({args.consumer_tag}) done; "
+                      f"per-sample TSVs persisted in {wd}/{mgefinder_dir}/")
+            else:
+                print(f"\n>>> Pipeline completed successfully!")
+                print(f"    Results in: {wd}/results/{ref_name}/")
 
 
 if __name__ == "__main__":
