@@ -19,6 +19,7 @@ data/
 
 # Generated at pipeline run (do not commit)
 .mge_genomes.yaml
-config/.mge_merged_config.yaml/.claude/
+config/.mge_merged_config.yaml
+/.claude/
 mge_*.log
 mge_*.err

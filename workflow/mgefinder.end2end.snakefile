@@ -220,18 +220,31 @@ rule download_fastq:
         r2=temp(join(FASTQ_STREAM_DIR, "{acc}_2.fastq.gz")),
     params:
         d=FASTQ_STREAM_DIR,
+    # dl_slots lets the driver cap concurrent downloads (mamba-lock + ENA
+    # throttling under -j 76 was aborting whole-SL runs). retries: whole-job
+    # retry on top of the in-shell retry loop.
+    resources:
+        dl_slots=1,
+    retries: 3
     shell:
         r'''
         set -euo pipefail
         tmp="{params.d}/.dl_{wildcards.acc}"
-        rm -rf "$tmp"; mkdir -p "$tmp"
         echo ">>> download_fastq: fastq-dl {wildcards.acc} -> {output.r1}"
-        micromamba run -n fastq-dl fastq-dl --accession {wildcards.acc} --outdir "$tmp"
-        f1=$(ls "$tmp"/*_1.fastq.gz "$tmp"/*_1.fq.gz 2>/dev/null | head -1 || true)
-        f2=$(ls "$tmp"/*_2.fastq.gz "$tmp"/*_2.fq.gz 2>/dev/null | head -1 || true)
-        if [ -z "$f1" ] || [ -z "$f2" ]; then
-            echo "ERROR: no paired FASTQ produced for {wildcards.acc}" >&2
-            ls -l "$tmp" >&2; exit 1
+        ok=0
+        for attempt in 1 2 3 4 5; do
+            rm -rf "$tmp"; mkdir -p "$tmp"
+            if micromamba run -n fastq-dl fastq-dl --accession {wildcards.acc} --outdir "$tmp"; then
+                f1=$(ls "$tmp"/*_1.fastq.gz "$tmp"/*_1.fq.gz 2>/dev/null | head -1 || true)
+                f2=$(ls "$tmp"/*_2.fastq.gz "$tmp"/*_2.fq.gz 2>/dev/null | head -1 || true)
+                if [ -n "$f1" ] && [ -n "$f2" ]; then ok=1; break; fi
+            fi
+            echo "download_fastq {wildcards.acc}: attempt $attempt failed; backing off" >&2
+            sleep $((attempt * 30))
+        done
+        if [ "$ok" -ne 1 ]; then
+            echo "ERROR: no paired FASTQ for {wildcards.acc} after 5 attempts" >&2
+            ls -l "$tmp" >&2 || true; exit 1
         fi
         mv "$f1" "{output.r1}"
         mv "$f2" "{output.r2}"
