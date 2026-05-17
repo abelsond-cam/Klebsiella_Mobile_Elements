@@ -469,11 +469,15 @@ def main():
         else:
             print(f">>> Warning: {ref_path_file} not found; Snakefile will fall back to "
                   f"assemblies_dir glob for reference '{ref_name}'", file=sys.stderr)
-        merged_yaml = Path("config/.mge_merged_config.yaml")
+        # Per-run merged config (NOT a shared repo path): concurrent runs each
+        # write their own under their unique wd. A single shared
+        # config/.mge_merged_config.yaml caused cross-job contamination —
+        # Snakemake of one job read another job's config -> wrong wd/genome.
+        merged_yaml = wd / ".mge_merged_config.yaml"
         merged_yaml.parent.mkdir(parents=True, exist_ok=True)
         with open(merged_yaml, "w") as f:
             yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
-        print(f">>> Created {merged_yaml} (config + genomes)")
+        print(f">>> Created {merged_yaml} (per-run config + genomes)")
         
         if not args.dry_run:
             check_first_inputs(wd, merged, ref_name)
